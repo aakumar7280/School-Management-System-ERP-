@@ -1,0 +1,227 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model School {
+  id        String    @id @default(cuid())
+  name      String
+  code      String    @unique
+  address   String?
+  feeDueDayOfMonth Int @default(1)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  students  Student[]
+  users     User[]
+  gradeConfigs SchoolGradeConfig[]
+}
+
+model SchoolGradeConfig {
+  id        String   @id @default(cuid())
+  schoolId  String
+  grade     String
+  sections  String[] @default([])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  school    School   @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([schoolId, grade])
+}
+
+model User {
+  id              String    @id @default(cuid())
+  schoolId        String
+  firstName       String
+  lastName        String
+  email           String
+  passwordHash    String
+  role            UserRole
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  loginId         String?
+  assignedClass   String?
+  assignedSection String?
+  subjects        String[]  @default([])
+  payStubs        PayStub[]
+  studentAccess   StudentAccess[]
+  school          School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([schoolId, email])
+  @@unique([schoolId, loginId])
+}
+
+model Student {
+  id            String       @id @default(cuid())
+  schoolId      String
+  admissionNo   String
+  firstName     String
+  lastName      String
+  className     String
+  section       String
+  guardianPhone String
+  samagraId     String?
+  dateOfBirth   DateTime?
+  gender        String?
+  caste         String?
+  religion      String?
+  busRoute      String?
+  photoUrl      String?
+  aadhaarNumber String?
+  fullAddress   String?
+  city          String?
+  state         String?
+  pinCode       String?
+  fatherName    String?
+  motherName    String?
+  parentPhone   String?
+  parentEmail   String?
+  studentPhone  String?
+  studentEmail  String?
+  birthCertificateUrl String?
+  aadhaarCardUrl String?
+  previousReportCardUrl String?
+  transferCertificateUrl String?
+  profileSubmittedAt DateTime?
+  isActive      Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  attendance    Attendance[]
+  feeInvoices   FeeInvoice[]
+  feeAssignment StudentFeeAssignment?
+  discount      Discount?
+  accessUsers   StudentAccess[]
+  school        School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([schoolId, admissionNo])
+}
+
+model StudentFeeAssignment {
+  id          String              @id @default(cuid())
+  studentId   String              @unique
+  billingCycle FeeBillingCycle    @default(YEARLY)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  student     Student             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  components  StudentFeeComponent[]
+}
+
+model StudentFeeComponent {
+  id           String               @id @default(cuid())
+  assignmentId String
+  feeType      String
+  cadence      FeeComponentCadence  @default(YEARLY)
+  amount       Decimal              @db.Decimal(10, 2)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  assignment   StudentFeeAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+}
+
+model Discount {
+  id        String       @id @default(cuid())
+  studentId String       @unique
+  type      DiscountType
+  value     Decimal      @default(0) @db.Decimal(10, 2)
+  reason    String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  student   Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+}
+
+model StudentAccess {
+  id        String   @id @default(cuid())
+  userId    String
+  studentId String
+  relation  StudentRelationType
+  createdAt DateTime @default(now())
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, studentId])
+}
+
+model Attendance {
+  id        String   @id @default(cuid())
+  studentId String
+  date      DateTime
+  present   Boolean
+  remark    String?
+  createdAt DateTime @default(now())
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, date])
+}
+
+model FeeInvoice {
+  id         String   @id @default(cuid())
+  studentId  String
+  title      String
+  amount     Decimal  @db.Decimal(10, 2)
+  paidAmount Decimal  @default(0) @db.Decimal(10, 2)
+  dueDate    DateTime
+  status     String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  student    Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  payments   FeePayment[]
+}
+
+model FeePayment {
+  id            String        @id @default(cuid())
+  invoiceId     String
+  amount        Decimal       @db.Decimal(10, 2)
+  paymentMethod PaymentMethod
+  feeType       String?
+  dueAfterPayment Decimal?    @db.Decimal(10, 2)
+  createdAt     DateTime      @default(now())
+  invoice       FeeInvoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model PayStub {
+  id        String   @id @default(cuid())
+  teacherId String
+  month     String
+  amount    Decimal  @db.Decimal(10, 2)
+  note      String?
+  createdAt DateTime @default(now())
+  teacher   User     @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  SCHOOL_ADMIN
+  TEACHER
+  STUDENT
+  PARENT
+  ACCOUNTANT
+}
+
+enum StudentRelationType {
+  STUDENT
+  PARENT
+}
+
+enum FeeBillingCycle {
+  YEARLY
+  QUARTERLY
+  MONTHLY
+}
+
+enum FeeComponentCadence {
+  MONTHLY
+  YEARLY
+}
+
+enum DiscountType {
+  FLAT
+  PERCENTAGE
+}
+
+enum PaymentMethod {
+  UPI
+  CASH
+}

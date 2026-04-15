@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: school-erp-api
+    env: node
+    plan: free
+    region: singapore
+    rootDir: .
+    buildCommand: npm install && npm run db:generate && npm run build --workspace @school-erp/api
+    startCommand: npx prisma migrate deploy --schema packages/db/prisma/schema.prisma && npm run start --workspace @school-erp/api
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 1d
+      - key: CORS_ORIGIN
+        sync: false

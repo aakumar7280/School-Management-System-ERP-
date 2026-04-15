@@ -1,0 +1,24 @@
+{
+  "name": "school-erp",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @school-erp/api",
+    "dev:api": "npm run dev --workspace @school-erp/api",
+    "dev:web": "npm run dev --workspace @school-erp/web",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "format": "npm run format --workspaces --if-present",
+    "db:generate": "npm run db:generate --workspace @school-erp/db",
+    "db:migrate": "npm run db:migrate --workspace @school-erp/db",
+    "db:seed": "npm run db:seed --workspace @school-erp/db"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

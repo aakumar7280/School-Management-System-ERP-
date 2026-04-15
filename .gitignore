@@ -1,0 +1,15 @@
+node_modules
+.env
+.env.*
+!.env.example
+.DS_Store
+dist
+coverage
+.vscode/settings.json
+apps/*/dist
+apps/*/.vite
+apps/*/*.tsbuildinfo
+**/*.tsbuildinfo
+apps/api/apps/api/uploads/
+packages/*/dist
+packages/db/generated
