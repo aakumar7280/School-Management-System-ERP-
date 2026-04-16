@@ -6,7 +6,7 @@ services:
     region: singapore
     rootDir: .
     buildCommand: (npm ci --include=dev || (rm -f package-lock.json && npm install --include=dev)) && npm run db:generate && npm run build --workspace @school-erp/api
-    startCommand: npx prisma migrate deploy --schema packages/db/prisma/schema.prisma && npm run start --workspace @school-erp/api
+    startCommand: npm run start --workspace @school-erp/api
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
