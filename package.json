@@ -16,7 +16,9 @@
     "format": "npm run format --workspaces --if-present",
     "db:generate": "npm run db:generate --workspace @school-erp/db",
     "db:migrate": "npm run db:migrate --workspace @school-erp/db",
-    "db:seed": "npm run db:seed --workspace @school-erp/db"
+    "db:seed": "npm run db:seed --workspace @school-erp/db",
+    "db:deploy:prod": "npm run db:generate && npx prisma migrate deploy --schema packages/db/prisma/schema.prisma",
+    "db:setup:prod": "npm run db:deploy:prod && npm run db:seed"
   },
   "engines": {
     "node": ">=20.0.0"
