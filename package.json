@@ -18,7 +18,9 @@
     "db:migrate": "npm run db:migrate --workspace @school-erp/db",
     "db:seed": "npm run db:seed --workspace @school-erp/db",
     "db:deploy:prod": "npm run db:generate && npx prisma migrate deploy --schema packages/db/prisma/schema.prisma",
-    "db:setup:prod": "npm run db:deploy:prod && npm run db:seed"
+    "db:setup:prod": "npm run db:deploy:prod && npm run db:seed",
+    "db:push:prod": "npm run db:generate && npx prisma db push --schema packages/db/prisma/schema.prisma --accept-data-loss",
+    "db:bootstrap:prod": "npm run db:push:prod && npm run db:seed"
   },
   "engines": {
     "node": ">=20.0.0"
