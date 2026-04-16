@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Saviour Convent Higher Secondary School</title>
+    <meta
+      name="description"
+      content="Official website of Saviour Convent Higher Secondary School, Bhopal. Discover admissions, academics, facilities, updates, and contact details."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container nav-wrap">
+        <a href="#home" class="brand">
+          <span class="brand-logo">
+            <img src="assets/photos/logo%20(1).jpg" alt="Saviour Convent Higher Secondary School Logo" />
+          </span>
+          <span>
+            <strong>Saviour Convent Higher Secondary School</strong>
+            <small>Learn • Lead • Serve</small>
+          </span>
+        </a>
+
+        <button class="menu-toggle" id="menuToggle" aria-label="Open menu">☰</button>
+
+        <nav id="topNav" class="top-nav">
+          <a href="#about">About</a>
+          <a href="#academics">Academics</a>
+          <a href="#admissions">Admissions</a>
+          <a href="#facilities">Facilities</a>
+          <a href="#gallery">Gallery</a>
+          <a href="#notices">Notices</a>
+          <a href="#contact">Contact</a>
+        </nav>
+
+        <a class="btn btn-primary" id="erpLoginBtn" href="https://school-management-system-erp-cw3u2j7t2-aakumar7280s-projects.vercel.app/login">ERP Login</a>
+      </div>
+    </header>
+
+    <main>
+      <section id="home" class="hero section">
+        <div class="container hero-grid">
+          <div>
+            <p class="eyebrow">Admissions Open 2026-27</p>
+            <h1>A nurturing school environment for every child</h1>
+            <p class="lead">
+              Greenfield Public School focuses on academics, character, sports, and life skills to help students build a strong future.
+            </p>
+            <div class="hero-actions">
+              <a href="#admissions" class="btn btn-primary">Apply for Admission</a>
+              <a href="#contact" class="btn btn-outline">Book a Campus Visit</a>
+            </div>
+          </div>
+          <div class="hero-card">
+            <h3>Quick Info</h3>
+            <ul>
+              <li><strong>School Hours:</strong> 8:00 AM – 2:30 PM</li>
+              <li><strong>Classes:</strong> Nursery to Grade 12</li>
+              <li><strong>Board:</strong> MP Board</li>
+              <li><strong>City:</strong> Bhopal, Madhya Pradesh</li>
+              <li><strong>Transport:</strong> Available across key routes</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="about" class="section">
+        <div class="container">
+          <div class="section-head">
+            <p class="eyebrow">About Us</p>
+            <h2>Building responsible learners since 2004</h2>
+          </div>
+          <div class="cards three">
+            <article class="card">
+              <h3>Our Vision</h3>
+              <p>
+                To develop confident, compassionate, and future-ready individuals through quality education.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Our Mission</h3>
+              <p>
+                To provide value-based learning, modern teaching methods, and opportunities in academics and co-curricular activities.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Principal’s Message</h3>
+              <p>
+                We believe every child can excel with the right mentorship, discipline, and encouragement.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="academics" class="section alt">
+        <div class="container">
+          <div class="section-head">
+            <p class="eyebrow">Academics</p>
+            <h2>Strong foundations, structured growth</h2>
+          </div>
+          <div class="cards three">
+            <article class="card">
+              <h3>Pre-Primary</h3>
+              <p>Play-based learning with focus on language, numbers, and social skills.</p>
+            </article>
+            <article class="card">
+              <h3>Primary & Middle</h3>
+              <p>Concept-focused teaching, regular assessments, and activity-based projects.</p>
+            </article>
+            <article class="card">
+              <h3>Secondary & Senior</h3>
+              <p>Board exam preparation, practical labs, career guidance, and mentoring.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="admissions" class="section">
+        <div class="container admissions-grid">
+          <div>
+            <div class="section-head left">
+              <p class="eyebrow">Admissions</p>
+              <h2>Simple and transparent admission process</h2>
+            </div>
+            <ol class="steps">
+              <li>Submit enquiry form / contact the office.</li>
+              <li>Collect and submit required documents.</li>
+              <li>Student interaction / assessment (if applicable).</li>
+              <li>Fee submission and confirmation.</li>
+            </ol>
+            <p class="muted">Documents usually required: Birth Certificate, Aadhaar, Photos, Previous Report Card, Address Proof.</p>
+          </div>
+          <form class="enquiry-form" onsubmit="event.preventDefault(); alert('Thanks! We will contact you shortly.');">
+            <h3>Admission Enquiry</h3>
+            <label>Parent Name <input type="text" required /></label>
+            <label>Phone Number <input type="tel" required /></label>
+            <label>Student Grade <input type="text" placeholder="e.g. Grade 5" required /></label>
+            <label>Email <input type="email" /></label>
+            <button type="submit" class="btn btn-primary full">Submit Enquiry</button>
+          </form>
+        </div>
+      </section>
+
+      <section id="facilities" class="section alt">
+        <div class="container">
+          <div class="section-head">
+            <p class="eyebrow">Facilities</p>
+            <h2>Everything students need to thrive</h2>
+          </div>
+          <div class="cards four">
+            <article class="card"><h3>Smart Classrooms</h3><p>Technology-enabled teaching for better engagement.</p></article>
+            <article class="card"><h3>Science & Computer Labs</h3><p>Hands-on practical learning with safety standards.</p></article>
+            <article class="card"><h3>Library</h3><p>Rich collection of books, journals, and digital resources.</p></article>
+            <article class="card"><h3>Sports & Activities</h3><p>Indoor/outdoor sports, arts, music, and clubs.</p></article>
+          </div>
+        </div>
+      </section>
+
+      <section id="gallery" class="section">
+        <div class="container">
+          <div class="section-head">
+            <p class="eyebrow">Gallery</p>
+            <h2>Campus life in pictures</h2>
+          </div>
+          <p class="muted">Replace placeholders below with your actual school images in <code>assets/photos/</code>.</p>
+          <div class="gallery-grid">
+            <figure class="photo placeholder"><figcaption>School Building</figcaption></figure>
+            <figure class="photo placeholder"><figcaption>Classroom Activity</figcaption></figure>
+            <figure class="photo placeholder"><figcaption>Science Lab</figcaption></figure>
+            <figure class="photo placeholder"><figcaption>Sports Day</figcaption></figure>
+            <figure class="photo placeholder"><figcaption>Annual Function</figcaption></figure>
+            <figure class="photo placeholder"><figcaption>Library</figcaption></figure>
+          </div>
+        </div>
+      </section>
+
+      <section id="notices" class="section alt">
+        <div class="container">
+          <div class="section-head">
+            <p class="eyebrow">Notices & Updates</p>
+            <h2>Important announcements</h2>
+          </div>
+          <div class="cards two">
+            <article class="card notice">
+              <p class="date">14 Apr 2026</p>
+              <h3>PTM Scheduled</h3>
+              <p>Parent-Teacher Meeting will be held on Saturday, 20 April, from 9:00 AM to 1:00 PM.</p>
+            </article>
+            <article class="card notice">
+              <p class="date">10 Apr 2026</p>
+              <h3>New Session Orientation</h3>
+              <p>Orientation for newly admitted students and parents is scheduled in the school auditorium.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-head">
+            <p class="eyebrow">Testimonials</p>
+            <h2>What parents say</h2>
+          </div>
+          <div class="cards three">
+            <article class="card"><p>“Teachers are supportive and very approachable.”</p><strong>— Parent, Grade 4</strong></article>
+            <article class="card"><p>“My child has become more confident in academics and speaking.”</p><strong>— Parent, Grade 7</strong></article>
+            <article class="card"><p>“Great balance between discipline and creativity.”</p><strong>— Parent, Grade 2</strong></article>
+          </div>
+        </div>
+      </section>
+
+      <section id="contact" class="section contact">
+        <div class="container contact-grid">
+          <div>
+            <div class="section-head left">
+              <p class="eyebrow">Contact Us</p>
+              <h2>Visit or call the school office</h2>
+            </div>
+              <p><strong>Address:</strong> Bhopal, Madhya Pradesh</p>
+            <p><strong>Phone:</strong> +91 98765 43210</p>
+              <p><strong>Email:</strong> info@saviourconvent.edu</p>
+            <p><strong>Office Hours:</strong> Mon-Sat, 8:00 AM - 4:00 PM</p>
+            <a class="btn btn-outline" target="_blank" rel="noreferrer" href="https://maps.google.com">Open in Google Maps</a>
+          </div>
+          <iframe
+            title="School Location"
+            loading="lazy"
+            referrerpolicy="no-referrer-when-downgrade"
+            src="https://www.google.com/maps?q=New+Delhi&output=embed"
+          ></iframe>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-wrap">
+        <p>© <span id="year"></span> Saviour Convent Higher Secondary School. All rights reserved.</p>
+        <div class="footer-links">
+          <a href="#home">Home</a>
+          <a href="#admissions">Admissions</a>
+          <a href="#contact">Contact</a>
+          <a id="erpFooterLink" href="https://school-management-system-erp-cw3u2j7t2-aakumar7280s-projects.vercel.app/login">ERP Login</a>
+        </div>
+      </div>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>
