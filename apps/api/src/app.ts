@@ -9,9 +9,11 @@ import { errorHandler } from './middleware/error-handler.js';
 import { apiRouter } from './routes/index.js';
 
 const app = express();
+const normalizeOrigin = (value: string) => value.trim().replace(/\/$/, '');
+
 const allowedOrigins = (env.CORS_ORIGIN ?? '')
 	.split(',')
-	.map((origin) => origin.trim())
+	.map((origin) => normalizeOrigin(origin))
 	.filter(Boolean);
 
 const isCorsRestricted = allowedOrigins.length > 0;
@@ -23,8 +25,9 @@ app.use(
 );
 app.use(
 	cors({
+		credentials: true,
 		origin: (origin, callback) => {
-			if (!origin || !isCorsRestricted || allowedOrigins.includes(origin)) {
+			if (!origin || !isCorsRestricted || allowedOrigins.includes(normalizeOrigin(origin))) {
 				return callback(null, true);
 			}
 
