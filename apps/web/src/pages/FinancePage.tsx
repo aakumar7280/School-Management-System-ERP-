@@ -74,7 +74,10 @@ export function FinancePage() {
   const [assignmentError, setAssignmentError] = useState<string | null>(null);
   const [invoiceSaving, setInvoiceSaving] = useState(false);
   const [bulkInvoiceSaving, setBulkInvoiceSaving] = useState(false);
+  const [previousDueSaving, setPreviousDueSaving] = useState(false);
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [previousDueAmount, setPreviousDueAmount] = useState('');
+  const [previousDueDate, setPreviousDueDate] = useState('');
   const [overview, setOverview] = useState<FinanceOverview | null>(null);
   const [financeLoading, setFinanceLoading] = useState(false);
   const [financeError, setFinanceError] = useState<string | null>(null);
@@ -151,6 +154,22 @@ export function FinancePage() {
     [filteredDueStudents, selectedMonthWindow.end, selectedMonthWindow.start]
   );
 
+  const nextMonthWindow = useMemo(() => {
+    const start = new Date(selectedMonthWindow.end);
+    const end = new Date(start);
+    end.setMonth(end.getMonth() + 1);
+    return { start, end };
+  }, [selectedMonthWindow.end]);
+
+  const nextMonthDueStudents = useMemo(
+    () =>
+      filteredDueStudents.filter((invoice) => {
+        const dueDate = new Date(invoice.dueDate);
+        return dueDate >= nextMonthWindow.start && dueDate < nextMonthWindow.end;
+      }),
+    [filteredDueStudents, nextMonthWindow.end, nextMonthWindow.start]
+  );
+
   const carryForwardDueTotal = useMemo(
     () => carryForwardDueStudents.reduce((sum, invoice) => sum + invoice.due, 0),
     [carryForwardDueStudents]
@@ -161,12 +180,26 @@ export function FinancePage() {
     [currentMonthDueStudents]
   );
 
+  const nextMonthDueTotal = useMemo(
+    () => nextMonthDueStudents.reduce((sum, invoice) => sum + invoice.due, 0),
+    [nextMonthDueStudents]
+  );
+
   const nextMonthLabel = useMemo(() => {
     const [yearPart, monthPart] = month.split('-').map((value) => Number(value));
     const date = new Date(yearPart, monthPart - 1, 1);
     date.setMonth(date.getMonth() + 1);
     return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   }, [month]);
+
+  const defaultPreviousDueDate = useMemo(() => {
+    const previousDate = new Date(selectedMonthWindow.start);
+    previousDate.setDate(previousDate.getDate() - 1);
+    const year = previousDate.getFullYear();
+    const monthPart = String(previousDate.getMonth() + 1).padStart(2, '0');
+    const day = String(previousDate.getDate()).padStart(2, '0');
+    return `${year}-${monthPart}-${day}`;
+  }, [selectedMonthWindow.start]);
 
   const filteredTransactions = useMemo(() => {
     const allTransactions = overview?.feeTransactions ?? [];
@@ -211,9 +244,14 @@ export function FinancePage() {
     [selectedSavedAssignment?.installmentAmount, configuredInstallmentAmount]
   );
 
+  const effectiveNextMonthDue = useMemo(
+    () => (nextMonthDueTotal > 0 ? nextMonthDueTotal : nextInstallmentPreviewAmount),
+    [nextMonthDueTotal, nextInstallmentPreviewAmount]
+  );
+
   const projectedNextMonthPayable = useMemo(
-    () => carryForwardDueTotal + nextInstallmentPreviewAmount,
-    [carryForwardDueTotal, nextInstallmentPreviewAmount]
+    () => carryForwardDueTotal + effectiveNextMonthDue,
+    [carryForwardDueTotal, effectiveNextMonthDue]
   );
 
   function togglePinnedPanel(panel: PinnedPanelKey) {
@@ -293,6 +331,10 @@ export function FinancePage() {
   useEffect(() => {
     loadFinanceData(month);
   }, [month]);
+
+  useEffect(() => {
+    setPreviousDueDate(defaultPreviousDueDate);
+  }, [defaultPreviousDueDate]);
 
   function fillFormFromAssignment(assignment: StudentFeeAssignment) {
     setSelectedStudentId(assignment.studentId);
@@ -425,6 +467,44 @@ export function FinancePage() {
       setAssignmentError(saveError instanceof Error ? saveError.message : 'Failed to generate invoices for eligible students');
     } finally {
       setBulkInvoiceSaving(false);
+    }
+  }
+
+  async function handleAddPreviousDue() {
+    if (!selectedStudent) {
+      setAssignmentError('Please select a student first.');
+      return;
+    }
+
+    const amount = Number(previousDueAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setAssignmentError('Enter a valid previous due amount greater than 0.');
+      return;
+    }
+
+    if (!previousDueDate) {
+      setAssignmentError('Please select a due date for previous due.');
+      return;
+    }
+
+    setPreviousDueSaving(true);
+    setAssignmentError(null);
+
+    try {
+      await createFeeInvoice({
+        admissionNo: selectedStudent.admissionNo,
+        title: 'Previous Session Due',
+        amount,
+        dueDate: previousDueDate
+      });
+
+      await loadFinanceData(month);
+      setPreviousDueAmount('');
+      setAssignmentMessage('Previous due added successfully. It will carry forward until paid.');
+    } catch (saveError) {
+      setAssignmentError(saveError instanceof Error ? saveError.message : 'Failed to add previous due');
+    } finally {
+      setPreviousDueSaving(false);
     }
   }
 
@@ -807,6 +887,93 @@ export function FinancePage() {
                 </select>
                 <div className="rounded-md border border-brand-orange/40 bg-brand-orange/5 px-3 py-2 text-sm">Current {billingCycle} Due: <span className="font-semibold text-brand-navy">{formatCurrency(configuredInstallmentAmount)}</span></div>
               </div>
+
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                <div className="flex items-center rounded-md border border-slate-200/80 bg-slate-50/50 px-3 transition-colors focus-within:border-brand-sky focus-within:bg-white">
+                  <span className="mr-2 text-sm text-slate-500">₹</span>
+                  <input
+                    className="w-full py-2 text-sm outline-none"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="Previous due amount"
+                    value={previousDueAmount}
+                    onChange={(event) => setPreviousDueAmount(event.target.value)}
+                  />
+                </div>
+                <input
+                  className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
+                  type="date"
+                  value={previousDueDate}
+                  onChange={(event) => setPreviousDueDate(event.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={handleAddPreviousDue}
+                  disabled={previousDueSaving || !selectedStudent}
+                  className="rounded-md border border-brand-orange/30 bg-brand-orange/10 px-4 py-2 text-sm font-semibold text-brand-navy hover:bg-brand-orange/20 disabled:opacity-60"
+                >
+                  {previousDueSaving ? 'Adding Previous Due...' : 'Add Previous Due'}
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-500">Use this for existing students with outstanding fees from earlier sessions/months. These dues remain pending and continue as carry-forward until paid.</p>
+
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3">
+                <h5 className="font-semibold text-brand-navy">Selected Student Pending Invoices</h5>
+                <p className="mt-1 text-xs text-slate-500">Previous dues and upcoming dues are shown here for quick admin visibility.</p>
+
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                  <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                    <p className="text-xs text-slate-500">Previous Due Outstanding</p>
+                    <p className="text-base font-semibold text-brand-navy">{formatCurrency(carryForwardDueTotal)}</p>
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                    <p className="text-xs text-slate-500">Current Month Due</p>
+                    <p className="text-base font-semibold text-brand-navy">{formatCurrency(currentMonthDueTotal)}</p>
+                  </div>
+                  <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                    <p className="text-xs text-slate-500">Next Month Due ({nextMonthLabel})</p>
+                    <p className="text-base font-semibold text-brand-navy">{formatCurrency(effectiveNextMonthDue)}</p>
+                  </div>
+                </div>
+
+                <div className="mt-3 max-h-56 overflow-auto rounded-md border border-slate-200/80 bg-white">
+                  <table className="min-w-full border-collapse text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-100 bg-slate-50/80">
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due</th>
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due Date</th>
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Type</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredDueStudents.map((invoice) => {
+                        const dueDate = new Date(invoice.dueDate);
+                        const dueType = dueDate < selectedMonthWindow.start
+                          ? 'Previous Due'
+                          : dueDate < selectedMonthWindow.end
+                            ? 'Current Month'
+                            : dueDate < nextMonthWindow.end
+                              ? 'Next Month'
+                              : 'Future';
+
+                        return (
+                          <tr key={`pending-invoice-${invoice.id}`} className="border-b border-slate-100">
+                            <td className="px-3 py-2 text-slate-700">{invoice.title}</td>
+                            <td className="px-3 py-2 font-semibold text-brand-navy">{formatCurrency(invoice.due)}</td>
+                            <td className="px-3 py-2 text-slate-600">{dueDate.toLocaleDateString()}</td>
+                            <td className="px-3 py-2 text-slate-600">{dueType}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {filteredDueStudents.length === 0 ? <p className="px-3 py-2 text-xs text-slate-500">No pending invoices for this student.</p> : null}
+                </div>
+              </div>
+
               <div className="flex justify-end">
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -852,7 +1019,7 @@ export function FinancePage() {
           <article className="rounded-lg border border-slate-200/80 border-l-4 border-l-red-400 bg-slate-50/50 p-3">
             <p className="text-xs text-slate-500">Next Month Payable Preview ({nextMonthLabel})</p>
             <p className="mt-1 text-lg font-semibold text-brand-navy">{formatCurrency(projectedNextMonthPayable)}</p>
-            <p className="text-xs text-slate-500">Carry-forward {formatCurrency(carryForwardDueTotal)} + next installment {formatCurrency(nextInstallmentPreviewAmount)}</p>
+            <p className="text-xs text-slate-500">Carry-forward {formatCurrency(carryForwardDueTotal)} + next-month due {formatCurrency(effectiveNextMonthDue)}</p>
           </article>
         </div>
 

@@ -264,6 +264,11 @@ export function StudentAdmissionPage({ portalLabel }: StudentAdmissionPageProps)
               <option value="Hindu">Hindu</option>
               <option value="Muslim">Muslim</option>
               <option value="Christian">Christian</option>
+              <option value="Sikh">Sikh</option>
+              <option value="Jain">Jain</option>
+              <option value="Buddhism">Buddhism</option>
+              <option value="Pasi">Pasi</option>
+              <option value="No Religion">No Religion</option>
             </select>
             <input className="rounded-md border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Caste (optional)" value={form.caste} onChange={(e) => setForm((prev) => ({ ...prev, caste: e.target.value }))} />
             <input className="rounded-md border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Bus Route (optional)" value={form.busRoute} onChange={(e) => setForm((prev) => ({ ...prev, busRoute: e.target.value }))} />

@@ -69,7 +69,14 @@ const createStudentSchema = z.object({
   lastName: z.string().min(1),
   className: z.string().min(1),
   section: z.string().min(1),
-  guardianPhone: z.string().min(10)
+  guardianPhone: z.string().min(10),
+  fatherName: z.string().optional(),
+  motherName: z.string().optional(),
+  parentPhone: z.string().optional(),
+  fullAddress: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().optional(),
+  pinCode: z.string().optional()
 });
 
 const updateStudentSchema = z.object({
@@ -94,7 +101,7 @@ const updateStudentProfileSchema = z.object({
   samagraId: z.string().min(1),
   aadhaarNumber: z.string().optional(),
   caste: z.string().optional(),
-  religion: z.enum(['Hindu', 'Muslim', 'Christian']).optional().or(z.literal('')),
+  religion: z.enum(['Hindu', 'Muslim', 'Christian', 'Sikh', 'Jain', 'Buddhism', 'Pasi', 'No Religion']).optional().or(z.literal('')),
   busRoute: z.string().optional(),
   fullAddress: z.string().min(5),
   city: z.string().min(2),
@@ -417,6 +424,7 @@ studentsRouter.get('/students', async (req: AuthenticatedRequest, res) => {
     const students = await prisma.student.findMany({
       where: {
         schoolId,
+        isActive: true,
         ...(className ? { className } : {}),
         ...(section ? { section } : {})
       },
@@ -445,6 +453,13 @@ studentsRouter.post('/students', async (req: AuthenticatedRequest, res) => {
     const student = await prisma.student.create({
       data: {
         ...payload,
+        fatherName: payload.fatherName?.trim() || null,
+        motherName: payload.motherName?.trim() || null,
+        parentPhone: payload.parentPhone?.trim() || payload.guardianPhone,
+        fullAddress: payload.fullAddress?.trim() || null,
+        city: payload.city?.trim() || null,
+        state: payload.state?.trim() || null,
+        pinCode: payload.pinCode?.trim() || null,
         schoolId
       }
     });
@@ -502,6 +517,42 @@ studentsRouter.patch('/students/:id', async (req: AuthenticatedRequest, res) => 
     }
 
     return res.status(400).json({ message: 'Unable to update student.' });
+  }
+});
+
+studentsRouter.delete('/students/:id', async (req: AuthenticatedRequest, res) => {
+  try {
+    const schoolId = req.auth!.schoolId;
+
+    const existing = await prisma.student.findFirst({
+      where: {
+        id: req.params.id,
+        schoolId
+      },
+      select: {
+        id: true,
+        isActive: true
+      }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: 'Student not found.' });
+    }
+
+    if (!existing.isActive) {
+      return res.json({ message: 'Student already deleted.' });
+    }
+
+    await prisma.student.update({
+      where: { id: existing.id },
+      data: {
+        isActive: false
+      }
+    });
+
+    return res.json({ message: 'Student deleted successfully.' });
+  } catch {
+    return res.status(400).json({ message: 'Unable to delete student.' });
   }
 });
 

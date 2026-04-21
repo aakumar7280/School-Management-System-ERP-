@@ -3,6 +3,8 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   AdminStudentProfile,
   createStudent,
+  downloadFeeInvoiceAsAdmin,
+  deleteStudent,
   fetchAcademicStructure,
   fetchAdminStudentProfile,
   fetchStudents,
@@ -39,7 +41,7 @@ type ProfileFormState = {
   state: string;
   pinCode: string;
   caste: string;
-  religion: '' | 'Hindu' | 'Muslim' | 'Christian';
+  religion: '' | 'Hindu' | 'Muslim' | 'Christian' | 'Sikh' | 'Jain' | 'Buddhism' | 'Pasi' | 'No Religion';
   busRoute: string;
   fatherName: string;
   motherName: string;
@@ -51,6 +53,7 @@ type ProfileFormState = {
 };
 
 export function StudentsPage() {
+  const PRE_PRIMARY_CLASS_ORDER = ['PLAYGROUP', 'PLAY', 'NURSERY', 'KG1', 'KG2'];
   const apiOrigin = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000/api').replace('/api', '');
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
@@ -75,6 +78,8 @@ export function StudentsPage() {
   const [editing, setEditing] = useState(false);
   const [showFullDetails, setShowFullDetails] = useState(false);
   const [brokenPhotoIds, setBrokenPhotoIds] = useState<Record<string, boolean>>({});
+  const [deletingStudentId, setDeletingStudentId] = useState<string | null>(null);
+  const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<string | null>(null);
 
   const [editForm, setEditForm] = useState({
     admissionNo: '',
@@ -188,6 +193,45 @@ export function StudentsPage() {
       setError(err instanceof Error ? err.message : 'Failed to update student');
     } finally {
       setEditing(false);
+    }
+  }
+
+  async function handleDeleteStudent(student: Student) {
+    const shouldDelete = window.confirm(`Delete ${student.firstName} ${student.lastName}? This will hide the student from student management.`);
+    if (!shouldDelete) return;
+
+    setDeletingStudentId(student.id);
+    setError(null);
+    setMessage(null);
+
+    try {
+      await deleteStudent(student.id);
+
+      if (selectedStudent?.id === student.id) {
+        setSelectedStudent(null);
+        setShowFullDetails(false);
+        setStudentProfile(null);
+      }
+
+      await loadStudents();
+      setMessage('Student deleted successfully.');
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete student');
+    } finally {
+      setDeletingStudentId(null);
+    }
+  }
+
+  async function handleDownloadInvoice(invoiceId: string) {
+    setDownloadingInvoiceId(invoiceId);
+    setProfileError(null);
+
+    try {
+      await downloadFeeInvoiceAsAdmin(invoiceId);
+    } catch (downloadError) {
+      setProfileError(downloadError instanceof Error ? downloadError.message : 'Failed to download invoice');
+    } finally {
+      setDownloadingInvoiceId(null);
     }
   }
 
@@ -359,6 +403,83 @@ export function StudentsPage() {
 
   const classOptions = useMemo(() => Array.from(new Set(students.map((student) => student.className))).sort(), [students]);
   const sectionOptions = useMemo(() => Array.from(new Set(students.map((student) => student.section))).sort(), [students]);
+  const totalStudents = students.length;
+  const newAdmissionsCount = useMemo(() => {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    return students.filter((student) => {
+      if (!student.createdAt) return false;
+      const createdAt = new Date(student.createdAt);
+      return !Number.isNaN(createdAt.getTime()) && createdAt >= startOfMonth;
+    }).length;
+  }, [students]);
+
+  const genderDistribution = useMemo(() => {
+    return students.reduce(
+      (acc, student) => {
+        const normalized = (student.gender ?? '').trim().toLowerCase();
+        if (normalized === 'male' || normalized === 'boy') {
+          acc.boys += 1;
+        } else if (normalized === 'female' || normalized === 'girl') {
+          acc.girls += 1;
+        } else {
+          acc.notAssigned += 1;
+        }
+
+        return acc;
+      },
+      { boys: 0, girls: 0, notAssigned: 0 }
+    );
+  }, [students]);
+
+  const genderTotal = genderDistribution.boys + genderDistribution.girls + genderDistribution.notAssigned;
+  const boysPercent = genderTotal > 0 ? (genderDistribution.boys / genderTotal) * 100 : 0;
+  const girlsPercent = genderTotal > 0 ? (genderDistribution.girls / genderTotal) * 100 : 0;
+  const genderChartBackground =
+    genderTotal > 0
+      ? `conic-gradient(#0f766e 0% ${boysPercent}%, #f97316 ${boysPercent}% ${boysPercent + girlsPercent}%, #94a3b8 ${boysPercent + girlsPercent}% 100%)`
+      : '#e2e8f0';
+
+  const classStrength = useMemo(() => {
+    const classCounts = new Map<string, number>();
+
+    students.forEach((student) => {
+      const className = student.className?.trim();
+      if (!className) return;
+      classCounts.set(className, (classCounts.get(className) ?? 0) + 1);
+    });
+
+    const numericClass = (className: string) => {
+      const match = className.match(/\d+/);
+      return match ? Number.parseInt(match[0], 10) : Number.NaN;
+    };
+
+    const classRank = (className: string) => {
+      const normalized = className.replace(/\s+/g, '').toUpperCase();
+      const prePrimaryIndex = PRE_PRIMARY_CLASS_ORDER.indexOf(normalized);
+      if (prePrimaryIndex >= 0) {
+        return prePrimaryIndex;
+      }
+
+      const numeric = numericClass(className);
+      if (Number.isFinite(numeric)) {
+        return 100 + numeric;
+      }
+
+      return 1000;
+    };
+
+    return Array.from(classCounts.entries())
+      .map(([className, count]) => ({ className, count }))
+      .sort((left, right) => {
+        const rankDifference = classRank(left.className) - classRank(right.className);
+        if (rankDifference !== 0) return rankDifference;
+        return left.className.localeCompare(right.className);
+      });
+  }, [students]);
+
+  const maxClassStrength = useMemo(() => Math.max(1, ...classStrength.map((entry) => entry.count)), [classStrength]);
   const allowedGrades = useMemo(() => gradeSettings.map((entry) => entry.grade), [gradeSettings]);
   const addAllowedSections = useMemo(() => gradeSettings.find((entry) => entry.grade === form.className)?.sections ?? [], [gradeSettings, form.className]);
   const editAllowedSections = useMemo(() => gradeSettings.find((entry) => entry.grade === editForm.className)?.sections ?? [], [gradeSettings, editForm.className]);
@@ -475,18 +596,48 @@ export function StudentsPage() {
         throw new Error('CSV is empty. Add header and at least one student row.');
       }
 
-      const headers = parseCsvLine(rows[0]).map((header) => header.toLowerCase());
-      const requiredHeaders = ['admissionno', 'firstname', 'lastname', 'classname', 'section', 'guardianphone'];
+      const normalizeHeader = (header: string) => header.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const headers = parseCsvLine(rows[0]).map((header) => normalizeHeader(header));
 
-      const missingHeaders = requiredHeaders.filter((requiredHeader) => !headers.includes(requiredHeader));
-      if (missingHeaders.length > 0) {
-        throw new Error(`Missing required CSV columns: ${missingHeaders.join(', ')}`);
+      const headerAliases: Record<string, string[]> = {
+        admissionNo: ['admissionno', 'admissionnumber', 'admno', 'admnumber'],
+        firstName: ['firstname', 'first'],
+        lastName: ['lastname', 'last', 'surname'],
+        className: ['class', 'classname', 'grade'],
+        section: ['section'],
+        fatherName: ['fathername', 'fathersname'],
+        motherName: ['mothername', 'mothersname'],
+        contactNo: ['contactno', 'contactnumber', 'phone', 'phoneno', 'guardianphone', 'parentphone'],
+        address: ['address', 'fulladdress']
+      };
+
+      const resolveColumnIndex = (aliases: string[]) => {
+        for (const alias of aliases) {
+          const index = headers.indexOf(alias);
+          if (index >= 0) return index;
+        }
+        return -1;
+      };
+
+      const requiredColumns = ['firstName', 'lastName', 'className', 'section', 'contactNo'] as const;
+      const columnIndexes = {
+        admissionNo: resolveColumnIndex(headerAliases.admissionNo),
+        firstName: resolveColumnIndex(headerAliases.firstName),
+        lastName: resolveColumnIndex(headerAliases.lastName),
+        className: resolveColumnIndex(headerAliases.className),
+        section: resolveColumnIndex(headerAliases.section),
+        fatherName: resolveColumnIndex(headerAliases.fatherName),
+        motherName: resolveColumnIndex(headerAliases.motherName),
+        contactNo: resolveColumnIndex(headerAliases.contactNo),
+        address: resolveColumnIndex(headerAliases.address)
+      };
+
+      const missingColumns = requiredColumns.filter((column) => columnIndexes[column] < 0);
+      if (missingColumns.length > 0) {
+        throw new Error(`Missing required CSV columns: ${missingColumns.join(', ')}`);
       }
 
-      const getValue = (columns: string[], columnName: string) => {
-        const columnIndex = headers.indexOf(columnName);
-        return columnIndex >= 0 ? (columns[columnIndex] ?? '').trim() : '';
-      };
+      const getValue = (columns: string[], columnIndex: number) => (columnIndex >= 0 ? (columns[columnIndex] ?? '').trim() : '');
 
       let successCount = 0;
       const failures: string[] = [];
@@ -494,16 +645,27 @@ export function StudentsPage() {
       for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
         const columns = parseCsvLine(rows[rowIndex]);
 
+        const firstName = getValue(columns, columnIndexes.firstName);
+        const lastName = getValue(columns, columnIndexes.lastName);
+        const className = getValue(columns, columnIndexes.className);
+        const section = getValue(columns, columnIndexes.section);
+        const contactNo = getValue(columns, columnIndexes.contactNo);
+        const admissionNoFromCsv = getValue(columns, columnIndexes.admissionNo);
+
         const payload = {
-          admissionNo: getValue(columns, 'admissionno'),
-          firstName: getValue(columns, 'firstname'),
-          lastName: getValue(columns, 'lastname'),
-          className: getValue(columns, 'classname'),
-          section: getValue(columns, 'section'),
-          guardianPhone: getValue(columns, 'guardianphone')
+          admissionNo: admissionNoFromCsv || `AUTO-${Date.now()}-${rowIndex}`,
+          firstName,
+          lastName,
+          className,
+          section,
+          guardianPhone: contactNo,
+          parentPhone: contactNo,
+          fatherName: getValue(columns, columnIndexes.fatherName),
+          motherName: getValue(columns, columnIndexes.motherName),
+          fullAddress: getValue(columns, columnIndexes.address)
         };
 
-        if (!payload.admissionNo || !payload.firstName || !payload.lastName || !payload.className || !payload.section || !payload.guardianPhone) {
+        if (!payload.firstName || !payload.lastName || !payload.className || !payload.section || !payload.guardianPhone) {
           failures.push(`Row ${rowIndex + 1}: one or more required fields are empty.`);
           continue;
         }
@@ -544,6 +706,74 @@ export function StudentsPage() {
       {error ? <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
       {message ? <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
 
+      <section className="space-y-4 rounded-xl border border-slate-200/80 bg-white p-4 shadow-card">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <article className="rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Total Students</p>
+            <p className="mt-1 text-3xl font-bold text-brand-navy">{totalStudents}</p>
+          </article>
+          <article className="rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">New Admissions (This Month)</p>
+            <p className="mt-1 text-3xl font-bold text-brand-navy">{newAdmissionsCount}</p>
+          </article>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+          <article className="rounded-xl border border-slate-200 bg-white p-4 xl:col-span-1">
+            <h3 className="text-base font-semibold text-brand-navy">Gender Distribution</h3>
+            <div className="mt-4 flex flex-col items-center gap-4">
+              <div
+                className="h-44 w-44 rounded-full border-8 border-white shadow-inner"
+                style={{ background: genderChartBackground }}
+                aria-label="Gender distribution pie chart"
+              />
+              <div className="w-full space-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-slate-600"><span className="h-2.5 w-2.5 rounded-full bg-teal-700" />Boys</span>
+                  <span className="font-semibold text-brand-navy">{genderDistribution.boys}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-slate-600"><span className="h-2.5 w-2.5 rounded-full bg-orange-500" />Girls</span>
+                  <span className="font-semibold text-brand-navy">{genderDistribution.girls}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-slate-600"><span className="h-2.5 w-2.5 rounded-full bg-slate-400" />Not Assigned</span>
+                  <span className="font-semibold text-brand-navy">{genderDistribution.notAssigned}</span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article className="rounded-xl border border-slate-200 bg-white p-4 xl:col-span-2">
+            <h3 className="text-base font-semibold text-brand-navy">Class Strength</h3>
+            <div className="mt-4 overflow-x-auto">
+              <div className="min-w-[680px]">
+                <div className="flex h-64 items-end gap-2 rounded-lg border border-slate-100 bg-slate-50/40 px-3 pb-3 pt-6">
+                  {classStrength.length === 0 ? (
+                    <p className="px-3 text-sm text-slate-500">No class data available.</p>
+                  ) : (
+                    classStrength.map((entry) => {
+                      const heightPercent = (entry.count / maxClassStrength) * 100;
+                      return (
+                        <div key={entry.className} className="flex min-w-[42px] flex-1 flex-col items-center justify-end gap-2">
+                          <span className="text-xs font-semibold text-slate-600">{entry.count}</span>
+                          <div
+                            className="w-full rounded-t-md bg-gradient-to-t from-brand-navy to-brand-sky"
+                            style={{ height: `${Math.max(8, heightPercent)}%` }}
+                            title={`${entry.className}: ${entry.count}`}
+                          />
+                          <span className="text-[11px] font-medium text-slate-500">{entry.className}</span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200/80 bg-white p-4 shadow-card">
         <button
           type="button"
@@ -578,7 +808,7 @@ export function StudentsPage() {
         </select>
       </div>
 
-      <p className="text-[11px] text-slate-400">CSV columns required: admissionNo, firstName, lastName, className, section, guardianPhone</p>
+      <p className="text-[11px] text-slate-400">CSV columns required: class/section, firstName, lastName, contact no. Optional: admissionNo, father&apos;s name, mother&apos;s name, address.</p>
 
       <p className="flex items-center gap-1.5 text-xs text-slate-500">
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand-navy/40" />
@@ -623,6 +853,7 @@ export function StudentsPage() {
               <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Class</th>
               <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Section</th>
               <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Guardian Phone</th>
+              <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -651,6 +882,21 @@ export function StudentsPage() {
                 <td className="px-4 py-3">{student.className}</td>
                 <td className="px-4 py-3">{student.section}</td>
                 <td className="px-4 py-3">{student.guardianPhone}</td>
+                <td className="px-4 py-3 text-right">
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void handleDeleteStudent(student);
+                    }}
+                    disabled={deletingStudentId === student.id}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-label={`Delete ${student.firstName} ${student.lastName}`}
+                    title="Delete student"
+                  >
+                    {deletingStudentId === student.id ? '…' : '×'}
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -711,11 +957,16 @@ export function StudentsPage() {
               </select>
               <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Samagra ID" value={profileForm.samagraId} onChange={(e) => setProfileForm((prev) => ({ ...prev, samagraId: e.target.value }))} required />
               <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Aadhaar Number" value={profileForm.aadhaarNumber} onChange={(e) => setProfileForm((prev) => ({ ...prev, aadhaarNumber: e.target.value }))} />
-              <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" value={profileForm.religion} onChange={(e) => setProfileForm((prev) => ({ ...prev, religion: e.target.value as '' | 'Hindu' | 'Muslim' | 'Christian' }))}>
+              <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" value={profileForm.religion} onChange={(e) => setProfileForm((prev) => ({ ...prev, religion: e.target.value as '' | 'Hindu' | 'Muslim' | 'Christian' | 'Sikh' | 'Jain' | 'Buddhism' | 'Pasi' | 'No Religion' }))}>
                 <option value="">Select Religion</option>
                 <option value="Hindu">Hindu</option>
                 <option value="Muslim">Muslim</option>
                 <option value="Christian">Christian</option>
+                <option value="Sikh">Sikh</option>
+                <option value="Jain">Jain</option>
+                <option value="Buddhism">Buddhism</option>
+                <option value="Pasi">Pasi</option>
+                <option value="No Religion">No Religion</option>
               </select>
               <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Caste (Optional)" value={profileForm.caste} onChange={(e) => setProfileForm((prev) => ({ ...prev, caste: e.target.value }))} />
               <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Bus Route (Optional)" value={profileForm.busRoute} onChange={(e) => setProfileForm((prev) => ({ ...prev, busRoute: e.target.value }))} />
@@ -797,6 +1048,7 @@ export function StudentsPage() {
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Due Type</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Due Date</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400">Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -813,11 +1065,63 @@ export function StudentsPage() {
                         </td>
                         <td className="px-4 py-3">{invoice.status}</td>
                         <td className="px-4 py-3">{new Date(invoice.dueDate).toLocaleDateString()}</td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadInvoice(invoice.id)}
+                            disabled={downloadingInvoiceId === invoice.id}
+                            className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                          >
+                            {downloadingInvoiceId === invoice.id ? 'Downloading...' : 'Download'}
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
                 {payableDueInvoices.length === 0 ? <p className="p-3 text-sm text-slate-500">No unpaid dues for the selected month context.</p> : null}
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-slate-200/80">
+                <div className="border-b border-slate-200/80 bg-slate-50/60 px-4 py-3">
+                  <h4 className="text-sm font-semibold text-brand-navy">Fee Payment Transaction Log</h4>
+                </div>
+                <table className="min-w-full border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b bg-slate-50/80">
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Date</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Amount</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Method</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Due After Payment</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {studentProfile.fees.payments.map((payment) => (
+                      <tr key={payment.id} className="border-b border-slate-100 table-row-hover">
+                        <td className="px-4 py-3 text-slate-500">{new Date(payment.createdAt).toLocaleDateString()}</td>
+                        <td className="px-4 py-3">{payment.invoiceTitle}</td>
+                        <td className="px-4 py-3 font-semibold text-brand-navy">{formatCurrency(payment.amount)}</td>
+                        <td className="px-4 py-3">{payment.paymentMethod}</td>
+                        <td className="px-4 py-3">{payment.feeType || '-'}</td>
+                        <td className="px-4 py-3">{payment.dueAfterPayment !== null ? formatCurrency(payment.dueAfterPayment) : '-'}</td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadInvoice(payment.invoiceId)}
+                            disabled={downloadingInvoiceId === payment.invoiceId}
+                            className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                          >
+                            {downloadingInvoiceId === payment.invoiceId ? 'Downloading...' : 'Download Invoice'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {studentProfile.fees.payments.length === 0 ? <p className="p-3 text-sm text-slate-500">No fee payment transactions found.</p> : null}
               </div>
             </div>
           ) : null}

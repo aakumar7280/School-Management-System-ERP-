@@ -22,7 +22,7 @@ async function main() {
     }
   });
 
-  const defaultGrades = Array.from({ length: 12 }, (_, index) => String(index + 1));
+  const defaultGrades = ['Play Group', 'Nursery', 'KG1', 'KG2', ...Array.from({ length: 12 }, (_, index) => String(index + 1))];
   for (const grade of defaultGrades) {
     await prisma.schoolGradeConfig.upsert({
       where: {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { FinanceSectionNav } from '../components/FinanceSectionNav';
 import {
+  deleteFeeInvoiceAsAdmin,
   FeeInvoiceListItem,
   fetchFeeInvoices
 } from '../lib/api';
@@ -14,6 +15,9 @@ export function FinanceInvoicesPage() {
   const [invoices, setInvoices] = useState<FeeInvoiceListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
+  const [downloadingList, setDownloadingList] = useState(false);
 
   const studentOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -43,6 +47,81 @@ export function FinanceInvoicesPage() {
       setError(loadError instanceof Error ? loadError.message : 'Failed to load invoices');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleDeleteInvoice(invoice: FeeInvoiceListItem) {
+    const shouldDelete = window.confirm(
+      `Delete invoice "${invoice.title}" for ${invoice.student.firstName} ${invoice.student.lastName}?`
+    );
+    if (!shouldDelete) return;
+
+    setDeletingInvoiceId(invoice.id);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const response = await deleteFeeInvoiceAsAdmin(invoice.id);
+      setMessage(response.message);
+      await loadData();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete invoice');
+    } finally {
+      setDeletingInvoiceId(null);
+    }
+  }
+
+  async function handleDownloadInvoiceList() {
+    if (filteredInvoices.length === 0) {
+      setError('No invoices available to download.');
+      return;
+    }
+
+    setDownloadingList(true);
+    setError(null);
+
+    try {
+      const rows = [
+        ['Created', 'Admission No', 'Student', 'Invoice', 'Amount', 'Paid', 'Due', 'Due Date', 'Status'],
+        ...filteredInvoices.map((invoice) => {
+          const due = Math.max(invoice.amount - invoice.paidAmount, 0);
+          return [
+            new Date(invoice.createdAt).toISOString(),
+            invoice.student.admissionNo,
+            `${invoice.student.firstName} ${invoice.student.lastName}`,
+            invoice.title,
+            String(invoice.amount),
+            String(invoice.paidAmount),
+            String(due),
+            new Date(invoice.dueDate).toISOString(),
+            invoice.status
+          ];
+        })
+      ];
+
+      const escapeCsv = (value: string) => {
+        if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+          return `"${value.replace(/"/g, '""')}"`;
+        }
+        return value;
+      };
+
+      const csv = rows.map((row) => row.map((cell) => escapeCsv(cell)).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const fileUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const dateSuffix = new Date().toISOString().slice(0, 10);
+      const targetLabel = selectedAdmissionNo === 'all' ? 'all-students' : selectedAdmissionNo;
+      anchor.href = fileUrl;
+      anchor.download = `fee-invoices-${targetLabel}-${dateSuffix}.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(fileUrl);
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : 'Failed to download invoices');
+    } finally {
+      setDownloadingList(false);
     }
   }
 
@@ -76,11 +155,22 @@ export function FinanceInvoicesPage() {
       <FinanceSectionNav />
 
       {error ? <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
+      {message ? <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
 
       <section className="rounded-xl border border-slate-200/80 bg-white shadow-card">
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
           <h3 className="font-semibold text-brand-navy">All Student Invoices</h3>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">Latest 50</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleDownloadInvoiceList()}
+              disabled={downloadingList || filteredInvoices.length === 0}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {downloadingList ? 'Downloading...' : 'Download Invoices'}
+            </button>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">Latest 50</span>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full border-collapse text-left text-sm">
@@ -95,6 +185,7 @@ export function FinanceInvoicesPage() {
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Due</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Due Date</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -116,6 +207,19 @@ export function FinanceInvoicesPage() {
                         invoice.status === 'PARTIAL' ? 'bg-amber-50 text-amber-700' :
                         'bg-red-50 text-red-600'
                       }`}>{invoice.status}</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteInvoice(invoice)}
+                          disabled={deletingInvoiceId === invoice.id}
+                          className="rounded-md border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          title="Delete invoice"
+                        >
+                          {deletingInvoiceId === invoice.id ? 'Deleting...' : 'Delete'}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

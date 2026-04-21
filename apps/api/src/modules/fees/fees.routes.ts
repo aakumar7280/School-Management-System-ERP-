@@ -8,7 +8,9 @@ const feesRouter = Router();
 
 const createInvoiceSchema = z.object({
   admissionNo: z.string().min(3),
-  title: z.string().min(3)
+  title: z.string().min(3),
+  amount: z.number().positive().optional(),
+  dueDate: z.string().optional()
 });
 
 const createPayStubSchema = z.object({
@@ -68,6 +70,14 @@ function getNextDueDate(feeDueDayOfMonth: number, from: Date = new Date()) {
   const nextMonthDueDay = Math.min(feeDueDayOfMonth, nextMonthLastDay);
 
   return new Date(nextMonthYear, nextMonth, nextMonthDueDay, 12, 0, 0, 0);
+}
+
+function toCsvCell(value: unknown) {
+  const text = String(value ?? '');
+  if (text.includes(',') || text.includes('"') || text.includes('\n')) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
 }
 
 feesRouter.use(requireStaffAuth);
@@ -389,6 +399,96 @@ feesRouter.get('/fees/invoices', async (req: AuthenticatedRequest, res) => {
   }
 });
 
+feesRouter.get('/fees/invoices/:invoiceId/download', async (req: AuthenticatedRequest, res) => {
+  try {
+    const schoolId = req.auth!.schoolId;
+    const invoice = await prisma.feeInvoice.findFirst({
+      where: {
+        id: req.params.invoiceId,
+        student: {
+          schoolId
+        }
+      },
+      include: {
+        student: {
+          select: {
+            admissionNo: true,
+            firstName: true,
+            lastName: true,
+            className: true,
+            section: true
+          }
+        },
+        payments: {
+          orderBy: {
+            createdAt: 'asc'
+          },
+          select: {
+            id: true,
+            createdAt: true,
+            amount: true,
+            paymentMethod: true,
+            feeType: true,
+            dueAfterPayment: true
+          }
+        }
+      }
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ message: 'Fee invoice not found.' });
+    }
+
+    const amount = Number(invoice.amount);
+    const paidAmount = Number(invoice.paidAmount);
+    const dueAmount = Math.max(amount - paidAmount, 0);
+
+    const rows: string[][] = [
+      ['Invoice ID', invoice.id],
+      ['Invoice Title', invoice.title],
+      ['Admission No', invoice.student.admissionNo],
+      ['Student Name', `${invoice.student.firstName} ${invoice.student.lastName}`],
+      ['Class', invoice.student.className],
+      ['Section', invoice.student.section],
+      ['Amount', amount.toFixed(2)],
+      ['Paid Amount', paidAmount.toFixed(2)],
+      ['Due Amount', dueAmount.toFixed(2)],
+      ['Status', invoice.status],
+      ['Due Date', invoice.dueDate.toISOString()],
+      ['Created At', invoice.createdAt.toISOString()],
+      ['Updated At', invoice.updatedAt.toISOString()],
+      [],
+      ['Payments'],
+      ['Payment ID', 'Date', 'Amount', 'Method', 'Fee Type', 'Due After Payment']
+    ];
+
+    if (invoice.payments.length === 0) {
+      rows.push(['-', '-', '-', '-', '-', '-']);
+    } else {
+      invoice.payments.forEach((payment: (typeof invoice.payments)[number]) => {
+        rows.push([
+          payment.id,
+          payment.createdAt.toISOString(),
+          Number(payment.amount).toFixed(2),
+          payment.paymentMethod,
+          payment.feeType ?? '',
+          payment.dueAfterPayment === null ? '' : Number(payment.dueAfterPayment).toFixed(2)
+        ]);
+      });
+    }
+
+    const csv = rows.map((row) => row.map((cell) => toCsvCell(cell)).join(',')).join('\n');
+    const safeAdmissionNo = invoice.student.admissionNo.replace(/[^a-zA-Z0-9_-]/g, '-');
+    const filename = `${safeAdmissionNo}-${invoice.id}-invoice.csv`;
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.status(200).send(csv);
+  } catch {
+    return res.status(400).json({ message: 'Unable to download fee invoice.' });
+  }
+});
+
 feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
   try {
     const schoolId = req.auth!.schoolId;
@@ -410,49 +510,61 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
       return res.status(400).json({ message: 'No school configuration found for this student.' });
     }
 
-    const assignment = await prisma.studentFeeAssignment.findUnique({
-      where: { studentId: student.id },
-      include: {
-        components: { orderBy: { createdAt: 'asc' } },
-        student: {
-          select: {
-            discount: {
-              select: {
-                id: true,
-                type: true,
-                value: true,
-                reason: true
+    let invoiceAmount = Number(payload.amount ?? 0);
+
+    if (!Number.isFinite(invoiceAmount) || invoiceAmount <= 0) {
+      const assignment = await prisma.studentFeeAssignment.findUnique({
+        where: { studentId: student.id },
+        include: {
+          components: { orderBy: { createdAt: 'asc' } },
+          student: {
+            select: {
+              discount: {
+                select: {
+                  id: true,
+                  type: true,
+                  value: true,
+                  reason: true
+                }
               }
             }
           }
         }
+      });
+
+      if (!assignment || assignment.components.length === 0) {
+        return res.status(400).json({ message: 'Fee structure not assigned for this student.' });
       }
-    });
 
-    if (!assignment || assignment.components.length === 0) {
-      return res.status(400).json({ message: 'Fee structure not assigned for this student.' });
+      const normalizedAssignment = toAssignmentResponse({
+        id: assignment.id,
+        studentId: assignment.studentId,
+        billingCycle: assignment.billingCycle,
+        updatedAt: assignment.updatedAt,
+        components: assignment.components,
+        discount: assignment.student.discount ?? null
+      });
+
+      invoiceAmount = Math.max(normalizedAssignment.installmentAmount, 0);
     }
 
-    const normalizedAssignment = toAssignmentResponse({
-      id: assignment.id,
-      studentId: assignment.studentId,
-      billingCycle: assignment.billingCycle,
-      updatedAt: assignment.updatedAt,
-      components: assignment.components,
-      discount: assignment.student.discount ?? null
-    });
-
-    const installmentAmount = Math.max(normalizedAssignment.installmentAmount, 0);
-    if (installmentAmount <= 0) {
-      return res.status(400).json({ message: 'Calculated installment amount must be greater than zero.' });
+    if (!Number.isFinite(invoiceAmount) || invoiceAmount <= 0) {
+      return res.status(400).json({ message: 'Invoice amount must be greater than zero.' });
     }
 
-    const dueDate = getNextDueDate(school.feeDueDayOfMonth);
+    const dueDate = payload.dueDate ? new Date(payload.dueDate) : getNextDueDate(school.feeDueDayOfMonth);
+
+    if (Number.isNaN(dueDate.getTime())) {
+      return res.status(400).json({ message: 'Invalid due date.' });
+    }
+
+    dueDate.setHours(12, 0, 0, 0);
 
     const existingInvoice = await prisma.feeInvoice.findFirst({
       where: {
         studentId: student.id,
         dueDate,
+        title: payload.title,
         status: {
           in: ['UNPAID', 'PARTIAL']
         }
@@ -470,7 +582,7 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
       data: {
         studentId: student.id,
         title: payload.title,
-        amount: installmentAmount,
+        amount: invoiceAmount,
         paidAmount: 0,
         dueDate,
         status: 'UNPAID'
@@ -582,6 +694,7 @@ feesRouter.post('/fees/invoices/bulk', async (req: AuthenticatedRequest, res) =>
         where: {
           studentId: assignment.studentId,
           dueDate,
+          title: `${assignment.billingCycle} Fee Invoice`,
           status: {
             in: ['UNPAID', 'PARTIAL']
           }
@@ -712,15 +825,11 @@ feesRouter.delete('/fees/invoices/:invoiceId', async (req: AuthenticatedRequest,
       return res.status(404).json({ message: 'Fee invoice not found.' });
     }
 
-    if (Number(invoice.paidAmount) > 0) {
-      return res.status(400).json({ message: 'Cannot delete invoice after payments are recorded.' });
-    }
-
     await prisma.feeInvoice.delete({ where: { id: invoice.id } });
 
-    return res.json({ message: 'Fee due deleted successfully.' });
+    return res.json({ message: 'Fee invoice deleted successfully.' });
   } catch {
-    return res.status(400).json({ message: 'Unable to delete fee due.' });
+    return res.status(400).json({ message: 'Unable to delete fee invoice.' });
   }
 });
 

@@ -16,7 +16,7 @@ export interface Student {
   dateOfBirth?: string | null;
   gender?: string | null;
   caste?: string | null;
-  religion?: 'Hindu' | 'Muslim' | 'Christian' | null;
+  religion?: 'Hindu' | 'Muslim' | 'Christian' | 'Sikh' | 'Jain' | 'Buddhism' | 'Pasi' | 'No Religion' | null;
   busRoute?: string | null;
   photoUrl?: string | null;
   aadhaarNumber?: string | null;
@@ -134,7 +134,7 @@ export interface AdminStudentProfileUpdatePayload {
   dateOfBirth?: string;
   gender?: string;
   caste?: string;
-  religion?: 'Hindu' | 'Muslim' | 'Christian' | '';
+  religion?: 'Hindu' | 'Muslim' | 'Christian' | 'Sikh' | 'Jain' | 'Buddhism' | 'Pasi' | 'No Religion' | '';
   busRoute?: string;
   aadhaarNumber?: string;
   fullAddress?: string;
@@ -202,7 +202,7 @@ export interface StudentAdmissionProfile {
   samagraId: string;
   aadhaarNumber: string;
   caste: string;
-  religion: 'Hindu' | 'Muslim' | 'Christian' | '';
+  religion: 'Hindu' | 'Muslim' | 'Christian' | 'Sikh' | 'Jain' | 'Buddhism' | 'Pasi' | 'No Religion' | '';
   busRoute: string;
   fullAddress: string;
   city: string;
@@ -229,7 +229,7 @@ export interface StudentAdmissionSubmission {
   samagraId: string;
   aadhaarNumber?: string;
   caste?: string;
-  religion?: 'Hindu' | 'Muslim' | 'Christian' | '';
+  religion?: 'Hindu' | 'Muslim' | 'Christian' | 'Sikh' | 'Jain' | 'Buddhism' | 'Pasi' | 'No Religion' | '';
   busRoute?: string;
   fullAddress: string;
   city: string;
@@ -547,6 +547,20 @@ export async function updateStudent(studentId: string, payload: Omit<Student, 'i
   return response.json();
 }
 
+export async function deleteStudent(studentId: string): Promise<{ message: string }> {
+  const response = await fetch(`${API_BASE_URL}/students/${studentId}`, {
+    method: 'DELETE',
+    headers: getAuthHeader()
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({ message: 'Failed to delete student' }));
+    throw new Error(data.message ?? 'Failed to delete student');
+  }
+
+  return response.json();
+}
+
 export async function fetchAdminStudentProfile(studentId: string): Promise<AdminStudentProfile> {
   const response = await fetch(`${API_BASE_URL}/students/${studentId}/profile`, {
     headers: getAuthHeader()
@@ -720,6 +734,8 @@ export async function updateTeacher(
 export async function createFeeInvoice(payload: {
   admissionNo: string;
   title: string;
+  amount?: number;
+  dueDate?: string;
 }): Promise<{ message: string }> {
   const response = await fetch(`${API_BASE_URL}/fees/invoices`, {
     method: 'POST',
@@ -1011,6 +1027,31 @@ export async function deleteFeeInvoiceAsAdmin(invoiceId: string): Promise<{ mess
   }
 
   return response.json();
+}
+
+export async function downloadFeeInvoiceAsAdmin(invoiceId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/fees/invoices/${invoiceId}/download`, {
+    headers: getAuthHeader()
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({ message: 'Failed to download fee invoice' }));
+    throw new Error(data.message ?? 'Failed to download fee invoice');
+  }
+
+  const blob = await response.blob();
+  const contentDisposition = response.headers.get('content-disposition') ?? '';
+  const matchedFilename = contentDisposition.match(/filename="?([^\";]+)"?/i);
+  const fileName = matchedFilename?.[1] ?? `invoice-${invoiceId}.csv`;
+
+  const fileUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = fileUrl;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(fileUrl);
 }
 
 export async function clearFeeTransactionsAsAdmin(): Promise<{ message: string }> {

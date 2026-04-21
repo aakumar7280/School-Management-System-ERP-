@@ -50,7 +50,7 @@ const admissionSchema = z.object({
   samagraId: z.string().min(1, 'Samagra ID is required.'),
   aadhaarNumber: z.string().optional(),
   caste: z.string().optional(),
-  religion: z.enum(['Hindu', 'Muslim', 'Christian']).optional().or(z.literal('')),
+  religion: z.enum(['Hindu', 'Muslim', 'Christian', 'Sikh', 'Jain', 'Buddhism', 'Pasi', 'No Religion']).optional().or(z.literal('')),
   busRoute: z.string().optional(),
   fullAddress: z.string().min(5),
   city: z.string().min(2),
