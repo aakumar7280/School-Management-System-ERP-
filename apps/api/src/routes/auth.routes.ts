@@ -16,73 +16,81 @@ const loginSchema = z.object({
 });
 
 authRouter.post('/auth/login', async (req, res) => {
-  const payload = loginSchema.parse(req.body);
+  try {
+    const payload = loginSchema.parse(req.body);
 
-  const user = await prisma.user.findFirst({
-    where: {
-      loginId: payload.loginId
-    },
-    include: {
-      school: {
-        select: {
-          id: true,
-          code: true,
-          name: true
+    const user = await prisma.user.findFirst({
+      where: {
+        loginId: payload.loginId
+      },
+      include: {
+        school: {
+          select: {
+            id: true,
+            code: true,
+            name: true
+          }
         }
       }
+    });
+
+    if (!user || !user.isActive || !user.school) {
+      return res.status(401).json({ message: 'Invalid login ID or password' });
     }
-  });
 
-  if (!user || !user.isActive || !user.school) {
-    return res.status(401).json({ message: 'Invalid login ID or password' });
+    const isValidPassword = await bcrypt.compare(payload.password, user.passwordHash);
+
+    if (!isValidPassword) {
+      return res.status(401).json({ message: 'Invalid login ID or password' });
+    }
+
+    const token = jwt.sign(
+      {
+        sub: user.id,
+        role: user.role,
+        schoolId: user.school.id,
+        schoolCode: user.school.code,
+        loginId: user.loginId
+      },
+      env.JWT_SECRET,
+      jwtSignOptions
+    );
+
+    const roleToPortal: Record<string, string> = {
+      SUPER_ADMIN: '/admin/dashboard',
+      SCHOOL_ADMIN: '/admin/dashboard',
+      ACCOUNTANT: '/admin/dashboard',
+      TEACHER: '/teacher/portal',
+      STUDENT: '/student/portal',
+      PARENT: '/parent/portal'
+    };
+
+    const portal = roleToPortal[user.role] ?? '/login';
+
+    return res.json({
+      token,
+      user: {
+        id: user.id,
+        role: user.role,
+        name: `${user.firstName} ${user.lastName}`,
+        schoolId: user.school.id,
+        schoolCode: user.school.code,
+        schoolName: user.school.name,
+        loginId: user.loginId,
+        email: user.email,
+        assignedClass: user.assignedClass,
+        assignedSection: user.assignedSection,
+        subjects: user.subjects
+      },
+      portal
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ message: 'Validation failed', issues: error.issues });
+    }
+
+    return res.status(503).json({ message: 'Authentication service is temporarily unavailable.' });
   }
-
-  const isValidPassword = await bcrypt.compare(payload.password, user.passwordHash);
-
-  if (!isValidPassword) {
-    return res.status(401).json({ message: 'Invalid login ID or password' });
-  }
-
-  const token = jwt.sign(
-    {
-      sub: user.id,
-      role: user.role,
-      schoolId: user.school.id,
-      schoolCode: user.school.code,
-      loginId: user.loginId
-    },
-    env.JWT_SECRET,
-    jwtSignOptions
-  );
-
-  const roleToPortal: Record<string, string> = {
-    SUPER_ADMIN: '/admin/dashboard',
-    SCHOOL_ADMIN: '/admin/dashboard',
-    ACCOUNTANT: '/admin/dashboard',
-    TEACHER: '/teacher/portal',
-    STUDENT: '/student/portal',
-    PARENT: '/parent/portal'
-  };
-
-  const portal = roleToPortal[user.role] ?? '/login';
-
-  return res.json({
-    token,
-    user: {
-      id: user.id,
-      role: user.role,
-      name: `${user.firstName} ${user.lastName}`,
-      schoolId: user.school.id,
-      schoolCode: user.school.code,
-      schoolName: user.school.name,
-      loginId: user.loginId,
-      email: user.email,
-      assignedClass: user.assignedClass,
-      assignedSection: user.assignedSection,
-      subjects: user.subjects
-    },
-    portal
-  });
 });
 
 export { authRouter };
