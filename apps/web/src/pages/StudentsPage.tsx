@@ -18,13 +18,6 @@ function formatCurrency(value: number) {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
 }
 
-function isClassOneOrAbove(className?: string) {
-  if (!className) return false;
-  const numericMatch = className.match(/\d+/);
-  if (!numericMatch) return false;
-  return Number(numericMatch[0]) >= 1;
-}
-
 type ProfileFormState = {
   admissionNo: string;
   firstName: string;
@@ -54,6 +47,7 @@ type ProfileFormState = {
 
 export function StudentsPage() {
   const PRE_PRIMARY_CLASS_ORDER = ['PLAYGROUP', 'PLAY', 'NURSERY', 'KG1', 'KG2'];
+  const CLASS_BAR_COLORS = ['#0f766e', '#f97316', '#6366f1', '#d946ef', '#16a34a', '#0284c7', '#dc2626', '#ca8a04', '#7c3aed', '#0891b2'];
   const apiOrigin = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000/api').replace('/api', '');
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
@@ -302,69 +296,6 @@ export function StudentsPage() {
   async function handleSaveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedStudent) return;
-
-    const hasName = profileForm.firstName.trim().length > 0 && profileForm.lastName.trim().length > 0;
-    if (!hasName) {
-      setProfileError('Student name is required. Enter both first and last name.');
-      return;
-    }
-
-    if (!profileForm.gender.trim()) {
-      setProfileError('Gender is required.');
-      return;
-    }
-
-    if (!profileForm.dateOfBirth) {
-      setProfileError('Date of birth is required.');
-      return;
-    }
-
-    if (!profileForm.fullAddress.trim()) {
-      setProfileError('Address is required.');
-      return;
-    }
-
-    const hasParentName = profileForm.fatherName.trim().length > 0 || profileForm.motherName.trim().length > 0;
-    if (!hasParentName) {
-      setProfileError('Parent name is required. Add at least father name or mother name.');
-      return;
-    }
-
-    if (!profileForm.parentPhone.trim() || !profileForm.parentEmail.trim()) {
-      setProfileError('Parent phone and parent email are required.');
-      return;
-    }
-
-    if (!profileForm.samagraId.trim()) {
-      setProfileError('Samagra ID is required.');
-      return;
-    }
-
-    const hasPhoto = Boolean(profileFiles.photo || studentProfile?.personal.photoUrl);
-    if (!hasPhoto) {
-      setProfileError('Student photo is required. Upload a photo or keep the existing one.');
-      return;
-    }
-
-    const hasBirthCertificate = Boolean(profileFiles.birthCertificate || studentProfile?.personal.birthCertificateUrl);
-    if (!hasBirthCertificate) {
-      setProfileError('Birth Certificate is required. Upload it or keep the existing one.');
-      return;
-    }
-
-    if (isClassOneOrAbove(profileForm.className)) {
-      const hasPreviousReportCard = Boolean(profileFiles.previousReportCard || studentProfile?.personal.previousReportCardUrl);
-      if (!hasPreviousReportCard) {
-        setProfileError('Previous Report Card is required for Class 1 and above.');
-        return;
-      }
-
-      const hasTransferCertificate = Boolean(profileFiles.transferCertificate || studentProfile?.personal.transferCertificateUrl);
-      if (!hasTransferCertificate) {
-        setProfileError('Transfer Certificate is required for Class 1 and above.');
-        return;
-      }
-    }
 
     setProfileSaving(true);
     setProfileError(null);
@@ -752,14 +683,16 @@ export function StudentsPage() {
                   {classStrength.length === 0 ? (
                     <p className="px-3 text-sm text-slate-500">No class data available.</p>
                   ) : (
-                    classStrength.map((entry) => {
+                    classStrength.map((entry, index) => {
                       const heightPercent = (entry.count / maxClassStrength) * 100;
+                      const barColor = CLASS_BAR_COLORS[index % CLASS_BAR_COLORS.length];
                       return (
-                        <div key={entry.className} className="flex min-w-[42px] flex-1 flex-col items-center justify-end gap-2">
+                        <div key={entry.className} className="flex h-full min-w-[42px] flex-1 flex-col items-center justify-end gap-2">
                           <span className="text-xs font-semibold text-slate-600">{entry.count}</span>
                           <div
-                            className="w-full rounded-t-md bg-gradient-to-t from-brand-navy to-brand-sky"
-                            style={{ height: `${Math.max(8, heightPercent)}%` }}
+                            className="w-full rounded-t-md"
+                            aria-label={`${entry.className} class strength bar`}
+                            style={{ height: `${Math.max(8, heightPercent)}%`, backgroundColor: barColor }}
                             title={`${entry.className}: ${entry.count}`}
                           />
                           <span className="text-[11px] font-medium text-slate-500">{entry.className}</span>
@@ -843,7 +776,8 @@ export function StudentsPage() {
         </form>
       ) : null}
 
-      <div className="overflow-x-auto rounded-xl border border-slate-200/80 bg-white shadow-card">
+      <div className="rounded-xl border border-slate-200/80 bg-white shadow-card">
+        <div className="max-h-[560px] overflow-auto">
         <table className="min-w-full border-collapse text-left text-sm">
           <thead>
             <tr className="border-b bg-slate-50/80">
@@ -901,6 +835,7 @@ export function StudentsPage() {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       {selectedStudent && showFullDetails ? (
@@ -932,30 +867,30 @@ export function StudentsPage() {
 
           {!profileLoading && studentProfile && profileTab === 'personal' ? (
             <form onSubmit={handleSaveProfile} className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Admission No" value={profileForm.admissionNo} onChange={(e) => setProfileForm((prev) => ({ ...prev, admissionNo: e.target.value }))} required />
-              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="First Name" value={profileForm.firstName} onChange={(e) => setProfileForm((prev) => ({ ...prev, firstName: e.target.value }))} required />
-              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Last Name" value={profileForm.lastName} onChange={(e) => setProfileForm((prev) => ({ ...prev, lastName: e.target.value }))} required />
-              <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" value={profileForm.className} onChange={(e) => setProfileForm((prev) => ({ ...prev, className: e.target.value, section: '' }))} required>
+              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Admission No" value={profileForm.admissionNo} onChange={(e) => setProfileForm((prev) => ({ ...prev, admissionNo: e.target.value }))} />
+              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="First Name" value={profileForm.firstName} onChange={(e) => setProfileForm((prev) => ({ ...prev, firstName: e.target.value }))} />
+              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Last Name" value={profileForm.lastName} onChange={(e) => setProfileForm((prev) => ({ ...prev, lastName: e.target.value }))} />
+              <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" value={profileForm.className} onChange={(e) => setProfileForm((prev) => ({ ...prev, className: e.target.value, section: '' }))}>
                 <option value="">Select Class</option>
                 {allowedGrades.map((grade) => (
                   <option key={grade} value={grade}>{grade}</option>
                 ))}
               </select>
-              <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" value={profileForm.section} onChange={(e) => setProfileForm((prev) => ({ ...prev, section: e.target.value }))} required>
+              <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" value={profileForm.section} onChange={(e) => setProfileForm((prev) => ({ ...prev, section: e.target.value }))}>
                 <option value="">Select Section</option>
                 {(gradeSettings.find((entry) => entry.grade === profileForm.className)?.sections ?? []).map((section) => (
                   <option key={section} value={section}>{section}</option>
                 ))}
               </select>
-              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Guardian Phone" value={profileForm.guardianPhone} onChange={(e) => setProfileForm((prev) => ({ ...prev, guardianPhone: e.target.value }))} required />
-              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" type="date" value={profileForm.dateOfBirth} onChange={(e) => setProfileForm((prev) => ({ ...prev, dateOfBirth: e.target.value }))} required />
-              <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" value={profileForm.gender} onChange={(e) => setProfileForm((prev) => ({ ...prev, gender: e.target.value }))} required>
+              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Guardian Phone" value={profileForm.guardianPhone} onChange={(e) => setProfileForm((prev) => ({ ...prev, guardianPhone: e.target.value }))} />
+              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" type="date" value={profileForm.dateOfBirth} onChange={(e) => setProfileForm((prev) => ({ ...prev, dateOfBirth: e.target.value }))} />
+              <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" value={profileForm.gender} onChange={(e) => setProfileForm((prev) => ({ ...prev, gender: e.target.value }))}>
                 <option value="">Select Gender</option>
                 <option value="Male">Male</option>
                 <option value="Female">Female</option>
                 <option value="Other">Other</option>
               </select>
-              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Samagra ID" value={profileForm.samagraId} onChange={(e) => setProfileForm((prev) => ({ ...prev, samagraId: e.target.value }))} required />
+              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Samagra ID" value={profileForm.samagraId} onChange={(e) => setProfileForm((prev) => ({ ...prev, samagraId: e.target.value }))} />
               <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Aadhaar Number" value={profileForm.aadhaarNumber} onChange={(e) => setProfileForm((prev) => ({ ...prev, aadhaarNumber: e.target.value }))} />
               <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" value={profileForm.religion} onChange={(e) => setProfileForm((prev) => ({ ...prev, religion: e.target.value as '' | 'Hindu' | 'Muslim' | 'Christian' | 'Sikh' | 'Jain' | 'Buddhism' | 'Pasi' | 'No Religion' }))}>
                 <option value="">Select Religion</option>
@@ -976,8 +911,8 @@ export function StudentsPage() {
               <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="PIN Code" value={profileForm.pinCode} onChange={(e) => setProfileForm((prev) => ({ ...prev, pinCode: e.target.value }))} />
               <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Father Name" value={profileForm.fatherName} onChange={(e) => setProfileForm((prev) => ({ ...prev, fatherName: e.target.value }))} />
               <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Mother Name" value={profileForm.motherName} onChange={(e) => setProfileForm((prev) => ({ ...prev, motherName: e.target.value }))} />
-              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Parent Phone" value={profileForm.parentPhone} onChange={(e) => setProfileForm((prev) => ({ ...prev, parentPhone: e.target.value }))} required />
-              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Parent Email" value={profileForm.parentEmail} onChange={(e) => setProfileForm((prev) => ({ ...prev, parentEmail: e.target.value }))} required />
+              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Parent Phone" value={profileForm.parentPhone} onChange={(e) => setProfileForm((prev) => ({ ...prev, parentPhone: e.target.value }))} />
+              <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Parent Email" value={profileForm.parentEmail} onChange={(e) => setProfileForm((prev) => ({ ...prev, parentEmail: e.target.value }))} />
               <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Student Phone" value={profileForm.studentPhone} onChange={(e) => setProfileForm((prev) => ({ ...prev, studentPhone: e.target.value }))} />
               <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 transition-colors focus:border-brand-sky focus:bg-white" placeholder="Student Email" value={profileForm.studentEmail} onChange={(e) => setProfileForm((prev) => ({ ...prev, studentEmail: e.target.value }))} />
 

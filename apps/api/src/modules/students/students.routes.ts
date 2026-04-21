@@ -37,11 +37,6 @@ const upload = multer({
   }
 });
 
-function isClassOneOrAbove(className: string) {
-  const parsed = Number.parseInt(String(className).match(/\d+/)?.[0] ?? '', 10);
-  return Number.isFinite(parsed) && parsed >= 1;
-}
-
 async function validateClassSection(schoolId: string, className: string, section: string) {
   const config = await prisma.schoolGradeConfig.findUnique({
     where: {
@@ -96,33 +91,24 @@ const updateStudentProfileSchema = z.object({
   className: z.string().min(1),
   section: z.string().min(1),
   guardianPhone: z.string().min(10),
-  dateOfBirth: z.string().min(8),
-  gender: z.string().min(1),
-  samagraId: z.string().min(1),
+  dateOfBirth: z.string().optional().or(z.literal('')),
+  gender: z.string().optional().or(z.literal('')),
+  samagraId: z.string().optional().or(z.literal('')),
   aadhaarNumber: z.string().optional(),
   caste: z.string().optional(),
   religion: z.enum(['Hindu', 'Muslim', 'Christian', 'Sikh', 'Jain', 'Buddhism', 'Pasi', 'No Religion']).optional().or(z.literal('')),
   busRoute: z.string().optional(),
-  fullAddress: z.string().min(5),
-  city: z.string().min(2),
-  state: z.string().min(2),
-  pinCode: z.string().regex(/^\d{6}$/),
+  fullAddress: z.string().optional().or(z.literal('')),
+  city: z.string().optional().or(z.literal('')),
+  state: z.string().optional().or(z.literal('')),
+  pinCode: z.string().regex(/^\d{6}$/).optional().or(z.literal('')),
   fatherName: z.string().optional(),
   motherName: z.string().optional(),
-  parentPhone: z.string().min(10),
-  parentEmail: z.string().email(),
+  parentPhone: z.string().optional().or(z.literal('')),
+  parentEmail: z.string().email().optional().or(z.literal('')),
   studentPhone: z.string().optional(),
   studentEmail: z.string().optional(),
   isActive: z.enum(['true', 'false']).optional()
-}).superRefine((value, ctx) => {
-  const hasParentName = Boolean(value.fatherName?.trim() || value.motherName?.trim());
-  if (!hasParentName) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Parent's Name is required.",
-      path: ['fatherName']
-    });
-  }
 });
 
 studentsRouter.use(requireStaffAuth);
@@ -337,22 +323,6 @@ studentsRouter.put(
       const nextPreviousReportCardUrl = previousReportCardFile ? `/uploads/student-admissions/${previousReportCardFile.filename}` : existing.previousReportCardUrl;
       const nextTransferCertificateUrl = transferCertificateFile ? `/uploads/student-admissions/${transferCertificateFile.filename}` : existing.transferCertificateUrl;
 
-      if (!nextPhotoUrl) {
-        return res.status(400).json({ message: 'Student photo upload is required.' });
-      }
-
-      if (!nextBirthCertificateUrl) {
-        return res.status(400).json({ message: 'Birth Certificate upload is required.' });
-      }
-
-      if (isClassOneOrAbove(parsed.className) && !nextPreviousReportCardUrl) {
-        return res.status(400).json({ message: 'Previous Report Card upload is required for Class 1 and above.' });
-      }
-
-      if (isClassOneOrAbove(parsed.className) && !nextTransferCertificateUrl) {
-        return res.status(400).json({ message: 'Transfer Certificate upload is required for Class 1 and above.' });
-      }
-
       const updated = await prisma.student.update({
         where: { id: existing.id },
         data: {
@@ -362,21 +332,21 @@ studentsRouter.put(
           className: parsed.className,
           section: parsed.section,
           guardianPhone: parsed.guardianPhone,
-          dateOfBirth: new Date(parsed.dateOfBirth),
-          gender: parsed.gender,
-          samagraId: parsed.samagraId,
+          dateOfBirth: parsed.dateOfBirth ? new Date(parsed.dateOfBirth) : null,
+          gender: parsed.gender?.trim() || null,
+          samagraId: parsed.samagraId?.trim() || null,
           aadhaarNumber: parsed.aadhaarNumber || null,
           caste: parsed.caste || null,
           religion: parsed.religion || null,
           busRoute: parsed.busRoute || null,
-          fullAddress: parsed.fullAddress,
-          city: parsed.city,
-          state: parsed.state,
-          pinCode: parsed.pinCode,
+          fullAddress: parsed.fullAddress?.trim() || null,
+          city: parsed.city?.trim() || null,
+          state: parsed.state?.trim() || null,
+          pinCode: parsed.pinCode?.trim() || null,
           fatherName: parsed.fatherName?.trim() || null,
           motherName: parsed.motherName?.trim() || null,
-          parentPhone: parsed.parentPhone,
-          parentEmail: parsed.parentEmail,
+          parentPhone: parsed.parentPhone?.trim() || null,
+          parentEmail: parsed.parentEmail?.trim() || null,
           studentPhone: parsed.studentPhone || null,
           studentEmail: parsed.studentEmail || null,
           photoUrl: nextPhotoUrl,
