@@ -11,6 +11,21 @@ import { apiRouter } from './routes/index.js';
 const app = express();
 const normalizeOrigin = (value: string) => value.trim().replace(/\/$/, '');
 
+function isOriginAllowed(origin: string, allowedOrigin: string) {
+	const normalizedOrigin = normalizeOrigin(origin);
+	const normalizedAllowedOrigin = normalizeOrigin(allowedOrigin);
+
+	if (normalizedAllowedOrigin.includes('*')) {
+		// Supports patterns like https://*.vercel.app
+		const escaped = normalizedAllowedOrigin
+			.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+			.replace(/\*/g, '.*');
+		return new RegExp(`^${escaped}$`).test(normalizedOrigin);
+	}
+
+	return normalizedOrigin === normalizedAllowedOrigin;
+}
+
 const allowedOrigins = (env.CORS_ORIGIN ?? '')
 	.split(',')
 	.map((origin) => normalizeOrigin(origin))
@@ -27,7 +42,7 @@ app.use(
 	cors({
 		credentials: true,
 		origin: (origin, callback) => {
-			if (!origin || !isCorsRestricted || allowedOrigins.includes(normalizeOrigin(origin))) {
+			if (!origin || !isCorsRestricted || allowedOrigins.some((allowedOrigin) => isOriginAllowed(origin, allowedOrigin))) {
 				return callback(null, true);
 			}
 

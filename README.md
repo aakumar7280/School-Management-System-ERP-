@@ -38,7 +38,7 @@ This starter repository is prepared from your requirement documents to reduce im
 - Set secrets in Render dashboard:
    - `DATABASE_URL`
    - `JWT_SECRET`
-   - `CORS_ORIGIN` (example: `https://erp.yourschool.com`)
+   - `CORS_ORIGIN` (example: `https://erp.yourschool.com,https://*.vercel.app`)
 - After deploy, verify `GET /api/health` is successful.
 
 ### 2) Deploy Web on Vercel
