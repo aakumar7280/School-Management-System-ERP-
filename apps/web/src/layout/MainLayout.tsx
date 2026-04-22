@@ -1,5 +1,5 @@
-import { NavLink } from 'react-router-dom';
-import { PropsWithChildren } from 'react';
+import { PropsWithChildren, useMemo, useState } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { clearSession } from '../auth/session';
 import { AuthSession } from '../auth/types';
@@ -104,12 +104,75 @@ interface MainLayoutProps extends PropsWithChildren {
   onLogout: () => void;
 }
 
+interface FeatureSearchItem {
+  label: string;
+  to: string;
+  keywords: string[];
+}
+
+function getFeatureSearchItems(role: string): FeatureSearchItem[] {
+  if (role === 'TEACHER') {
+    return [
+      { label: 'Teacher Portal', to: '/teacher/portal', keywords: ['teacher', 'home', 'portal'] },
+      { label: 'Classes', to: '/admin/classes', keywords: ['class', 'attendance', 'sections'] }
+    ];
+  }
+
+  if (role === 'STUDENT') {
+    return [
+      { label: 'Student Dashboard', to: '/student/dashboard', keywords: ['student', 'home', 'dashboard'] },
+      { label: 'Student Profile', to: '/student/profile', keywords: ['profile', 'details'] },
+      { label: 'Student Fees', to: '/student/fees', keywords: ['fees', 'invoice', 'payments'] }
+    ];
+  }
+
+  if (role === 'PARENT') {
+    return [
+      { label: 'Parent Dashboard', to: '/parent/dashboard', keywords: ['parent', 'home', 'dashboard'] },
+      { label: 'Parent Profile', to: '/parent/profile', keywords: ['profile', 'details'] },
+      { label: 'Parent Fees', to: '/parent/fees', keywords: ['fees', 'invoice', 'payments'] }
+    ];
+  }
+
+  return [
+    { label: 'Dashboard', to: '/admin/dashboard', keywords: ['overview', 'home', 'analytics'] },
+    { label: 'Students', to: '/admin/students', keywords: ['admissions', 'student management', 'profiles'] },
+    { label: 'Staff', to: '/admin/staff', keywords: ['staff management', 'teachers', 'employees'] },
+    { label: 'Finance Dashboard', to: '/admin/finance/dashboard', keywords: ['finance', 'summary', 'dues'] },
+    { label: 'Fee Payments', to: '/admin/finance/fees', keywords: ['fees', 'transactions', 'collect fee'] },
+    { label: 'Invoices', to: '/admin/finance/invoices', keywords: ['invoice', 'billing', 'download'] },
+    { label: 'Salaries', to: '/admin/finance/salaries', keywords: ['salary', 'payroll'] },
+    { label: 'Classes', to: '/admin/classes', keywords: ['classes', 'attendance', 'timetable'] },
+    { label: 'Settings', to: '/admin/settings', keywords: ['settings', 'configuration'] }
+  ];
+}
+
 export function MainLayout({ children, session, onLogout }: MainLayoutProps) {
   const navItems = getNavItems(session?.user.role ?? '');
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [searchText, setSearchText] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const featureSearchItems = useMemo(() => getFeatureSearchItems(session?.user.role ?? ''), [session?.user.role]);
   const websiteUrl =
     import.meta.env.VITE_SCHOOL_WEBSITE_URL ??
     localStorage.getItem('school_website_url') ??
     'http://localhost:5500/school-website/index.html';
+
+  const filteredSearchItems = useMemo(() => {
+    const query = searchText.trim().toLowerCase();
+    if (!query) {
+      return featureSearchItems.slice(0, 6);
+    }
+
+    return featureSearchItems
+      .filter((item) => {
+        const inLabel = item.label.toLowerCase().includes(query);
+        const inKeywords = item.keywords.some((keyword) => keyword.toLowerCase().includes(query));
+        return inLabel || inKeywords;
+      })
+      .slice(0, 8);
+  }, [featureSearchItems, searchText]);
 
   function handleLogout() {
     clearSession();
@@ -121,6 +184,12 @@ export function MainLayout({ children, session, onLogout }: MainLayoutProps) {
     clearSession();
     onLogout();
     window.location.href = websiteUrl;
+  }
+
+  function handleFeatureSelect(to: string) {
+    setSearchText('');
+    setSearchOpen(false);
+    navigate(to);
   }
 
   return (
@@ -138,6 +207,61 @@ export function MainLayout({ children, session, onLogout }: MainLayoutProps) {
               <p className="text-[11px] leading-none text-slate-400">Management System</p>
             </div>
           </div>
+
+          <div className="relative hidden w-full max-w-xl flex-1 lg:block">
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <svg className="h-4 w-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35m1.85-5.65a7.5 7.5 0 11-15 0 7.5 7.5 0 0115 0z" />
+              </svg>
+              <input
+                type="search"
+                value={searchText}
+                onFocus={() => setSearchOpen(true)}
+                onBlur={() => setTimeout(() => setSearchOpen(false), 100)}
+                onChange={(event) => {
+                  setSearchText(event.target.value);
+                  setSearchOpen(true);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && filteredSearchItems[0]) {
+                    handleFeatureSelect(filteredSearchItems[0].to);
+                  }
+                }}
+                className="w-full bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-400"
+                placeholder="Search features (students, invoices, fees...)"
+                aria-label="Search ERP features"
+              />
+            </div>
+
+            {searchOpen ? (
+              <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-40 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+                {filteredSearchItems.length === 0 ? (
+                  <p className="px-2 py-1 text-xs text-slate-400">No matching features</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {filteredSearchItems.map((item) => {
+                      const isCurrent = location.pathname === item.to;
+                      return (
+                        <li key={`${item.label}-${item.to}`}>
+                          <button
+                            type="button"
+                            onMouseDown={() => handleFeatureSelect(item.to)}
+                            className={`flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm transition ${
+                              isCurrent ? 'bg-brand-sky/10 text-brand-navy' : 'text-slate-700 hover:bg-slate-50'
+                            }`}
+                          >
+                            <span>{item.label}</span>
+                            <span className="text-xs text-slate-400">{item.to}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            ) : null}
+          </div>
+
           <div className="flex items-center gap-3">
             <div className="hidden items-center gap-2 sm:flex">
               <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${getRoleBadgeColor(session?.user.role ?? '')}`}>

@@ -1,163 +1,184 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { DashboardActivity, DashboardSummary, fetchDashboardActivity, fetchDashboardSummary } from '../lib/api';
+import {
+  ClassOverview,
+  DashboardActivity,
+  DashboardSummary,
+  FinanceOverview,
+  fetchClassesOverview,
+  fetchDashboardActivity,
+  fetchDashboardSummary,
+  fetchFinanceOverview
+} from '../lib/api';
 
-const adminModules = [
-  {
-    title: 'Staff Management',
-    description: 'Manage teachers and staff profiles, status, and assignments.',
-    to: '/admin/staff',
-    cta: 'Open Staff',
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-      </svg>
-    ),
-    color: 'text-purple-600 bg-purple-50'
-  },
-  {
-    title: 'Fees & Finance',
-    description: 'Track invoices, payment collection, and outstanding balances.',
-    to: '/admin/finance/dashboard',
-    cta: 'Open Finance',
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
-    ),
-    color: 'text-emerald-600 bg-emerald-50'
-  },
-  {
-    title: 'Student Management',
-    description: 'Handle student records, classes, and lifecycle operations.',
-    to: '/admin/students',
-    cta: 'Open Students',
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422A12.083 12.083 0 0121 12.765M12 14l-6.16-3.422A12.083 12.083 0 003 12.765M12 14v7" />
-      </svg>
-    ),
-    color: 'text-brand-sky bg-sky-50'
-  },
-  {
-    title: 'Classes',
-    description: 'View class-wise students, teachers and attendance snapshots.',
-    to: '/admin/classes',
-    cta: 'Open Classes',
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-      </svg>
-    ),
-    color: 'text-amber-600 bg-amber-50'
-  }
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
+}
+
+const quickLinks = [
+  { title: 'Add Student', to: '/admin/students' },
+  { title: 'Add Teacher', to: '/admin/staff' },
+  { title: 'Collect Fee', to: '/admin/finance/fees' },
+  { title: 'Attendance', to: '/admin/classes' },
+  { title: 'Exam Schedule', to: '/admin/classes' },
+  { title: 'Reports', to: '/admin/finance/dashboard' }
 ];
 
 export function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [activity, setActivity] = useState<DashboardActivity[]>([]);
+  const [classes, setClasses] = useState<ClassOverview[]>([]);
+  const [finance, setFinance] = useState<FinanceOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([fetchDashboardSummary(), fetchDashboardActivity()])
-      .then(([summaryData, activityData]) => {
+    Promise.all([fetchDashboardSummary(), fetchDashboardActivity(), fetchClassesOverview(), fetchFinanceOverview()])
+      .then(([summaryData, activityData, classData, financeData]) => {
         setSummary(summaryData);
         setActivity(activityData);
+        setClasses(classData);
+        setFinance(financeData);
       })
       .catch((requestError: Error) => setError(requestError.message))
       .finally(() => setLoading(false));
   }, []);
 
-  const stats = useMemo(() => {
-    if (!summary) {
-      return [
-        { label: 'Total Students', value: '--' },
-        { label: 'Total Teachers', value: '--' }
-      ];
-    }
+  const totalClasses = useMemo(() => {
+    const classSectionPairs = new Set(classes.map((entry) => `${entry.className}-${entry.section}`));
+    return classSectionPairs.size;
+  }, [classes]);
+
+  const classBandData = useMemo(() => {
+    const grouped = {
+      KG: 0,
+      Primary: 0,
+      Middle: 0,
+      'High School': 0,
+      'Higher Sec.': 0
+    };
+
+    classes.forEach((entry) => {
+      const normalized = entry.className.replace(/\s+/g, '').toUpperCase();
+      const numericClass = Number.parseInt(entry.className.match(/\d+/)?.[0] ?? '', 10);
+
+      if (['PLAY', 'PLAYGROUP', 'NURSERY', 'KG1', 'KG2', 'LKG', 'UKG'].includes(normalized)) {
+        grouped.KG += entry.studentCount;
+      } else if (Number.isFinite(numericClass) && numericClass <= 5) {
+        grouped.Primary += entry.studentCount;
+      } else if (Number.isFinite(numericClass) && numericClass <= 8) {
+        grouped.Middle += entry.studentCount;
+      } else if (Number.isFinite(numericClass) && numericClass <= 10) {
+        grouped['High School'] += entry.studentCount;
+      } else {
+        grouped['Higher Sec.'] += entry.studentCount;
+      }
+    });
 
     return [
-      { label: 'Total Students', value: String(summary.totalStudents) },
-      { label: 'Total Teachers', value: String(summary.totalTeachers) }
+      { label: 'KG', value: grouped.KG, color: '#a855f7' },
+      { label: 'Primary', value: grouped.Primary, color: '#8b5cf6' },
+      { label: 'Middle', value: grouped.Middle, color: '#6366f1' },
+      { label: 'High School', value: grouped['High School'], color: '#4f46e5' },
+      { label: 'Higher Sec.', value: grouped['Higher Sec.'], color: '#3b82f6' }
     ];
-  }, [summary]);
+  }, [classes]);
+
+  const maxClassBand = useMemo(() => Math.max(1, ...classBandData.map((item) => item.value)), [classBandData]);
+  const feeTarget = Math.max(finance?.summary.totalBilled ?? 0, 1);
+  const feeCollected = finance?.summary.totalCollected ?? 0;
+  const feeProgress = Math.min(Math.round((feeCollected / feeTarget) * 100), 100);
 
   return (
-    <div className="space-y-6">
-      {/* Page header */}
-      <div className="rounded-2xl bg-gradient-to-r from-brand-navy to-brand-navy/80 p-6 shadow-md">
-        <h2 className="text-2xl font-bold text-white">Admin Dashboard</h2>
-        <p className="mt-1 text-sm text-white/70">Live overview of students, staff, and fee collection.</p>
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-3xl font-bold text-slate-900">Dashboard</h2>
+        <p className="mt-1 text-sm text-slate-500">Key insights at a glance</p>
       </div>
 
       {loading ? <p className="text-sm text-slate-500">Loading dashboard...</p> : null}
-      {error ? (
-        <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">
-          <span className="font-medium">Error:</span> {error}
-        </div>
-      ) : null}
+      {error ? <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div> : null}
 
-      {/* Stats row */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {stats.map((item, index) => (
-          <article key={item.label} className="group relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card transition hover:shadow-card-hover">
-            <div className={`absolute left-0 top-0 h-full w-1 ${index === 0 ? 'bg-brand-sky' : 'bg-brand-orange'}`} />
-            <p className="text-sm font-medium text-slate-500">{item.label}</p>
-            <p className="mt-2 text-3xl font-bold text-slate-900">{item.value}</p>
-          </article>
-        ))}
-      </div>
-
-      {/* Admin modules grid */}
-      <section>
-        <h3 className="mb-4 text-lg font-semibold text-slate-800">Quick Access</h3>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {adminModules.map((module) => (
-            <Link
-              key={module.title}
-              to={module.to}
-              className="group rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card transition hover:shadow-card-hover hover:border-slate-300/80"
-            >
-              <div className={`mb-3 inline-flex rounded-xl p-2.5 ${module.color}`}>
-                {module.icon}
-              </div>
-              <h4 className="font-semibold text-slate-800 group-hover:text-brand-navy">{module.title}</h4>
-              <p className="mt-1 text-sm leading-relaxed text-slate-500">{module.description}</p>
-              <span className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-brand-navy">
-                {module.cta}
-                <svg className="h-3 w-3 transition group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                </svg>
-              </span>
-            </Link>
-          ))}
-        </div>
+      <section className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-card md:grid-cols-2 xl:grid-cols-4">
+        <article className="rounded-xl border border-slate-100 bg-slate-50/40 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Students</p>
+          <p className="mt-1 text-3xl font-bold text-slate-900">{summary?.totalStudents ?? '--'}</p>
+        </article>
+        <article className="rounded-xl border border-slate-100 bg-slate-50/40 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Teachers</p>
+          <p className="mt-1 text-3xl font-bold text-slate-900">{summary?.totalTeachers ?? '--'}</p>
+        </article>
+        <article className="rounded-xl border border-slate-100 bg-slate-50/40 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Classes</p>
+          <p className="mt-1 text-3xl font-bold text-slate-900">{totalClasses}</p>
+        </article>
+        <article className="rounded-xl border border-slate-100 bg-slate-50/40 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Pending Fees</p>
+          <p className="mt-1 text-3xl font-bold text-slate-900">{formatCurrency(finance?.summary.totalDue ?? 0)}</p>
+        </article>
       </section>
 
-      {/* Recent activity */}
-      <section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card">
-        <h3 className="text-lg font-semibold text-slate-800">Recent Activity</h3>
-        {activity.length === 0 ? (
-          <p className="mt-3 text-sm text-slate-400">No recent activities found.</p>
-        ) : (
-          <ul className="mt-3 divide-y divide-slate-100">
-            {activity.map((item, index) => (
-              <li key={`${item.type}-${item.date}-${index}`} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
-                <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-sky/10 text-brand-sky">
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm text-slate-700">{item.message}</p>
-                  <p className="mt-0.5 text-xs text-slate-400">{item.date}</p>
-                </div>
-              </li>
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <article className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card">
+          <h3 className="text-base font-semibold text-slate-800">Fee Collection <span className="text-slate-400">(This Month)</span></h3>
+          <p className="mt-4 text-4xl font-bold text-slate-900">{formatCurrency(feeCollected)}</p>
+          <p className="mt-1 text-sm text-slate-500">of {formatCurrency(feeTarget)}</p>
+          <div className="mt-5 h-2.5 rounded-full bg-slate-100">
+            <div className="h-full rounded-full bg-emerald-500" style={{ width: `${feeProgress}%` }} />
+          </div>
+          <p className="mt-2 text-right text-sm font-semibold text-slate-600">{feeProgress}%</p>
+        </article>
+
+        <article className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card">
+          <h3 className="text-base font-semibold text-slate-800">Students Overview</h3>
+          <div className="mt-4 flex h-44 items-end gap-3 rounded-lg border border-slate-100 bg-slate-50/50 p-3">
+            {classBandData.map((item) => (
+              <div key={item.label} className="flex min-w-[52px] flex-1 flex-col items-center justify-end gap-1.5">
+                <div className="w-full rounded-md" style={{ height: `${Math.max(10, Math.round((item.value / maxClassBand) * 130))}px`, backgroundColor: item.color }} />
+                <p className="text-[11px] font-medium text-slate-500">{item.label}</p>
+              </div>
             ))}
-          </ul>
-        )}
+          </div>
+        </article>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <article className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-base font-semibold text-slate-800">Quick Links</h3>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {quickLinks.map((link) => (
+              <Link
+                key={link.title}
+                to={link.to}
+                className="rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-4 text-center text-sm font-semibold text-slate-700 hover:bg-white hover:text-brand-navy"
+              >
+                {link.title}
+              </Link>
+            ))}
+          </div>
+        </article>
+
+        <article className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-card">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-base font-semibold text-slate-800">Recent Activities</h3>
+            <span className="text-xs font-semibold text-slate-400">View All</span>
+          </div>
+          {activity.length === 0 ? (
+            <p className="text-sm text-slate-500">No recent activities found.</p>
+          ) : (
+            <ul className="space-y-2">
+              {activity.slice(0, 5).map((item, index) => (
+                <li key={`${item.type}-${item.date}-${index}`} className="rounded-lg border border-slate-100 bg-slate-50/40 px-3 py-2.5">
+                  <p className="text-sm text-slate-700">{item.message}</p>
+                  <p className="mt-1 text-xs text-slate-400">{item.date}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </article>
       </section>
     </div>
   );
