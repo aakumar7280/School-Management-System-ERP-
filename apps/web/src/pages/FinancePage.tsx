@@ -120,8 +120,7 @@ export function FinancePage() {
 
         const searchable = `${student.admissionNo} ${student.firstName} ${student.lastName} ${student.className} ${student.section}`.toLowerCase();
         return searchable.includes(query);
-      })
-      .slice(0, 30);
+      });
   }, [students, studentSearch, studentClassFilter]);
 
   const selectedStudent = useMemo(() => students.find((student) => student.id === selectedStudentId) ?? null, [students, selectedStudentId]);
@@ -676,7 +675,7 @@ export function FinancePage() {
             )}
           </div>
 
-          <p className="text-xs text-slate-500">Showing up to 30 matches. Keep typing to narrow quickly.</p>
+          <p className="text-xs text-slate-500">Showing all matches. Keep typing to narrow quickly.</p>
         </div>
 
         <div className="rounded-md border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm text-brand-navy">

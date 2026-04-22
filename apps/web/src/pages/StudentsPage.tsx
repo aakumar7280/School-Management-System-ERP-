@@ -48,6 +48,7 @@ type ProfileFormState = {
 export function StudentsPage() {
   const PRE_PRIMARY_CLASS_ORDER = ['PLAYGROUP', 'PLAY', 'NURSERY', 'KG1', 'KG2'];
   const CLASS_BAR_COLORS = ['#0f766e', '#f97316', '#6366f1', '#d946ef', '#16a34a', '#0284c7', '#dc2626', '#ca8a04', '#7c3aed', '#0891b2'];
+  const CLASS_BAR_MAX_HEIGHT_PX = 160;
   const apiOrigin = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000/api').replace('/api', '');
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
@@ -684,15 +685,15 @@ export function StudentsPage() {
                     <p className="px-3 text-sm text-slate-500">No class data available.</p>
                   ) : (
                     classStrength.map((entry, index) => {
-                      const heightPercent = (entry.count / maxClassStrength) * 100;
+                      const barHeightPx = Math.max(12, Math.round((entry.count / maxClassStrength) * CLASS_BAR_MAX_HEIGHT_PX));
                       const barColor = CLASS_BAR_COLORS[index % CLASS_BAR_COLORS.length];
                       return (
-                        <div key={entry.className} className="flex h-full min-w-[42px] flex-1 flex-col items-center justify-end gap-2">
+                        <div key={entry.className} className="flex min-w-[42px] flex-1 flex-col items-center justify-end gap-2">
                           <span className="text-xs font-semibold text-slate-600">{entry.count}</span>
                           <div
                             className="w-full rounded-t-md"
                             aria-label={`${entry.className} class strength bar`}
-                            style={{ height: `${Math.max(8, heightPercent)}%`, backgroundColor: barColor }}
+                            style={{ height: `${barHeightPx}px`, backgroundColor: barColor }}
                             title={`${entry.className}: ${entry.count}`}
                           />
                           <span className="text-[11px] font-medium text-slate-500">{entry.className}</span>
