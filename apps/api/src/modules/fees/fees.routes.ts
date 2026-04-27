@@ -32,7 +32,7 @@ const upsertFeeAssignmentSchema = z.object({
     .array(
       z.object({
         feeType: z.string().min(1),
-        cadence: z.enum(['MONTHLY', 'YEARLY']),
+        cadence: z.enum(['MONTHLY', 'YEARLY', 'ONCE']),
         amount: z.number().min(0)
       })
     ),
@@ -182,7 +182,7 @@ function toAssignmentResponse(assignment: {
   studentId: string;
   billingCycle: 'YEARLY' | 'QUARTERLY' | 'MONTHLY';
   updatedAt: Date;
-  components: Array<{ id: string; feeType: string; cadence: 'MONTHLY' | 'YEARLY'; amount: unknown }>;
+  components: Array<{ id: string; feeType: string; cadence: 'MONTHLY' | 'YEARLY' | 'ONCE'; amount: unknown }>;
   student?: AssignmentStudent;
   discount?: AssignmentDiscount;
 }) {
@@ -192,7 +192,10 @@ function toAssignmentResponse(assignment: {
   const monthlySubtotal = assignment.components
     .filter((component) => component.cadence === 'MONTHLY')
     .reduce((sum, component) => sum + Number(component.amount), 0);
-  const annualSubtotal = yearlySubtotal + monthlySubtotal * 12;
+  const onceSubtotal = assignment.components
+    .filter((component) => component.cadence === 'ONCE')
+    .reduce((sum, component) => sum + Number(component.amount), 0);
+  const annualSubtotal = yearlySubtotal + monthlySubtotal * 12 + onceSubtotal;
   const parsedDiscounts = parseStoredDiscountEntries(assignment.discount);
   const discountAmount = computeDiscountAmount(annualSubtotal, parsedDiscounts);
   const finalTotal = Math.max(annualSubtotal - discountAmount, 0);
@@ -232,6 +235,7 @@ function toAssignmentResponse(assignment: {
     subtotal: annualSubtotal,
     yearlySubtotal,
     monthlySubtotal,
+    onceSubtotal,
     discountAmount,
     finalTotal,
     annualTotal: finalTotal,
@@ -601,7 +605,8 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
     const student = await prisma.student.findFirst({
       where: {
         admissionNo: payload.admissionNo,
-        schoolId
+        schoolId,
+        isActive: true
       }
     });
 

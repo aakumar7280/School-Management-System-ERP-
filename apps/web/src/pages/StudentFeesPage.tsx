@@ -122,7 +122,10 @@ export function StudentFeesPage({ portalLabel }: StudentFeesPageProps) {
               {fees.assignedFee.components.map((component) => (
                 <div key={component.id} className="flex items-center justify-between rounded-md border border-slate-200/80 px-3 py-2">
                   <span>
-                    {component.feeType} <span className="text-xs text-slate-500">({component.cadence === 'MONTHLY' ? 'Monthly' : 'Yearly'})</span>
+                    {component.feeType}{' '}
+                    <span className="text-xs text-slate-500">
+                      ({component.cadence === 'MONTHLY' ? 'Monthly' : component.cadence === 'YEARLY' ? 'Yearly' : 'Once'})
+                    </span>
                   </span>
                   <span className="font-semibold text-brand-navy">{formatCurrency(component.amount)}</span>
                 </div>

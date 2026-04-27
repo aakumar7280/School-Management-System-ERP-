@@ -20,6 +20,12 @@ function formatCurrency(value: number) {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
 }
 
+function cadenceLabel(cadence: FeeComponentCadence) {
+  if (cadence === 'MONTHLY') return 'Monthly';
+  if (cadence === 'YEARLY') return 'Yearly';
+  return 'Once';
+}
+
 interface CollapsiblePanelProps {
   title: string;
   isOpen: boolean;
@@ -31,6 +37,7 @@ interface CollapsiblePanelProps {
 type AccordionPanelKey = 'studentSelection' | 'feeComponents' | 'discount' | 'dues' | 'transactions';
 type PinnedPanelKey = 'studentSelection' | 'summary';
 type DiscountRow = { id: string; type: 'FLAT' | 'PERCENTAGE'; value: string; reason: string };
+type FeeComponentCadence = 'MONTHLY' | 'YEARLY' | 'ONCE';
 
 function CollapsiblePanel({ title, isOpen, onToggle, children, rightSlot }: CollapsiblePanelProps) {
   return (
@@ -65,7 +72,7 @@ export function FinancePage() {
   const [studentSearch, setStudentSearch] = useState('');
   const [studentClassFilter, setStudentClassFilter] = useState('all');
   const [billingCycle, setBillingCycle] = useState<'YEARLY' | 'QUARTERLY' | 'MONTHLY'>('MONTHLY');
-  const [components, setComponents] = useState<Array<{ feeType: string; cadence: 'MONTHLY' | 'YEARLY'; amount: string }>>([]);
+  const [components, setComponents] = useState<Array<{ feeType: string; cadence: FeeComponentCadence; amount: string }>>([]);
   const [discounts, setDiscounts] = useState<DiscountRow[]>([]);
   const [assignmentLoading, setAssignmentLoading] = useState(true);
   const [assignmentSaving, setAssignmentSaving] = useState(false);
@@ -91,6 +98,8 @@ export function FinancePage() {
   const [paymentMessage, setPaymentMessage] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [isInvoicePreviewOpen, setIsInvoicePreviewOpen] = useState(false);
+  const [invoicePreviewSelectedComponentIds, setInvoicePreviewSelectedComponentIds] = useState<string[]>([]);
+  const [invoicePreviewSelectedDiscountIds, setInvoicePreviewSelectedDiscountIds] = useState<string[]>([]);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [activeAccordionPanel, setActiveAccordionPanel] = useState<AccordionPanelKey | null>('studentSelection');
   const [pinnedPanels, setPinnedPanels] = useState<PinnedPanelKey[]>(['summary']);
@@ -232,8 +241,18 @@ export function FinancePage() {
         return;
       }
 
-      const monthlyPayable = component.cadence === 'MONTHLY' ? componentAmount : componentAmount / 12;
-      const installmentPayable = component.cadence === 'MONTHLY' ? componentAmount * monthlyMultiplier : componentAmount / installmentCount;
+      const monthlyPayable =
+        component.cadence === 'MONTHLY'
+          ? componentAmount
+          : component.cadence === 'YEARLY'
+            ? componentAmount / 12
+            : 0;
+      const installmentPayable =
+        component.cadence === 'MONTHLY'
+          ? componentAmount * monthlyMultiplier
+          : component.cadence === 'YEARLY'
+            ? componentAmount / installmentCount
+            : componentAmount;
       const current = grouped.get(component.feeType) ?? { monthlyPayable: 0, installmentPayable: 0 };
 
       grouped.set(component.feeType, {
@@ -283,7 +302,15 @@ export function FinancePage() {
     [components]
   );
 
-  const subtotal = useMemo(() => yearlySubtotal + monthlySubtotal * 12, [yearlySubtotal, monthlySubtotal]);
+  const onceSubtotal = useMemo(
+    () =>
+      components
+        .filter((component) => component.cadence === 'ONCE')
+        .reduce((sum, component) => sum + (Number.isFinite(Number(component.amount)) ? Number(component.amount) : 0), 0),
+    [components]
+  );
+
+  const subtotal = useMemo(() => yearlySubtotal + monthlySubtotal * 12 + onceSubtotal, [yearlySubtotal, monthlySubtotal, onceSubtotal]);
 
   const computedDiscountAmount = useMemo(() => {
     const rawDiscountAmount = discounts.reduce((sum, discount) => {
@@ -324,17 +351,23 @@ export function FinancePage() {
     [carryForwardDueTotal, effectiveNextMonthDue]
   );
 
-  const invoicePreviewData = useMemo(() => {
+  const invoicePreviewInstallmentLabel = useMemo(() => {
+    if (!selectedSavedAssignment) return 'Monthly';
+    if (selectedSavedAssignment.billingCycle === 'MONTHLY') return 'Monthly';
+    if (selectedSavedAssignment.billingCycle === 'QUARTERLY') return 'Quarterly';
+    return 'Yearly';
+  }, [selectedSavedAssignment]);
+
+  const invoicePreviewComponents = useMemo(() => {
     if (!selectedSavedAssignment) {
-      return {
-        installmentLabel: 'Monthly',
-        rows: [] as Array<{ feeType: string; monthlyPayable: number; cyclePayable: number }>,
-        cycleSubtotal: 0,
-        discountPerCycle: 0,
-        cycleNetPayable: 0,
-        monthlyNetPayable: 0,
-        discounts: [] as Array<{ id: string; type: 'FLAT' | 'PERCENTAGE'; value: number; reason?: string | null }>
-      };
+      return [] as Array<{
+        id: string;
+        feeType: string;
+        cadence: FeeComponentCadence;
+        baseAmount: number;
+        monthlyPayable: number;
+        cyclePayable: number;
+      }>;
     }
 
     const installmentCount =
@@ -350,29 +383,39 @@ export function FinancePage() {
           ? 3
           : 12;
 
-    const grouped = new Map<string, { monthlyPayable: number; cyclePayable: number }>();
-    selectedSavedAssignment.components.forEach((component) => {
-      const value = Number(component.amount || 0);
-      if (!Number.isFinite(value) || value <= 0) {
-        return;
-      }
+    return selectedSavedAssignment.components
+      .map((component) => {
+        const baseAmount = Number(component.amount || 0);
+        const monthlyPayable =
+          component.cadence === 'MONTHLY'
+            ? baseAmount
+            : component.cadence === 'YEARLY'
+              ? baseAmount / 12
+              : 0;
+        const cyclePayable =
+          component.cadence === 'MONTHLY'
+            ? baseAmount * cycleMonthMultiplier
+            : component.cadence === 'YEARLY'
+              ? baseAmount / installmentCount
+              : baseAmount;
 
-      const monthlyPayable = component.cadence === 'MONTHLY' ? value : value / 12;
-      const cyclePayable = component.cadence === 'MONTHLY' ? value * cycleMonthMultiplier : value / installmentCount;
-      const current = grouped.get(component.feeType) ?? { monthlyPayable: 0, cyclePayable: 0 };
-      grouped.set(component.feeType, {
-        monthlyPayable: current.monthlyPayable + monthlyPayable,
-        cyclePayable: current.cyclePayable + cyclePayable
-      });
-    });
-
-    const rows = Array.from(grouped.entries())
-      .map(([feeType, value]) => ({ feeType, monthlyPayable: value.monthlyPayable, cyclePayable: value.cyclePayable }))
+        return {
+          id: component.id,
+          feeType: component.feeType,
+          cadence: component.cadence as FeeComponentCadence,
+          baseAmount,
+          monthlyPayable,
+          cyclePayable
+        };
+      })
+      .filter((component) => Number.isFinite(component.baseAmount) && component.baseAmount > 0)
       .sort((left, right) => right.cyclePayable - left.cyclePayable);
+  }, [selectedSavedAssignment]);
 
-    const cycleSubtotal = rows.reduce((sum, row) => sum + row.cyclePayable, 0);
-    const discountPerCycle = Math.min(Math.max(selectedSavedAssignment.discountAmount / installmentCount, 0), cycleSubtotal);
-    const cycleNetPayable = Math.max(cycleSubtotal - discountPerCycle, 0);
+  const invoicePreviewDiscounts = useMemo(() => {
+    if (!selectedSavedAssignment) {
+      return [] as Array<{ id: string; type: 'FLAT' | 'PERCENTAGE'; value: number; reason?: string | null }>;
+    }
 
     const discounts =
       selectedSavedAssignment.discounts && selectedSavedAssignment.discounts.length > 0
@@ -381,21 +424,46 @@ export function FinancePage() {
           ? [selectedSavedAssignment.discount]
           : [];
 
-    return {
-      installmentLabel:
-        selectedSavedAssignment.billingCycle === 'MONTHLY'
-          ? 'Monthly'
-          : selectedSavedAssignment.billingCycle === 'QUARTERLY'
-            ? 'Quarterly'
-            : 'Yearly',
-      rows,
-      cycleSubtotal,
-      discountPerCycle,
-      cycleNetPayable,
-      monthlyNetPayable: selectedSavedAssignment.finalTotal / 12,
-      discounts
-    };
+    return discounts
+      .map((discount) => ({
+        id: discount.id,
+        type: discount.type,
+        value: Number(discount.value || 0),
+        reason: discount.reason
+      }))
+      .filter((discount) => Number.isFinite(discount.value) && discount.value > 0);
   }, [selectedSavedAssignment]);
+
+  const selectedInvoiceComponents = useMemo(
+    () => invoicePreviewComponents.filter((component) => invoicePreviewSelectedComponentIds.includes(component.id)),
+    [invoicePreviewComponents, invoicePreviewSelectedComponentIds]
+  );
+
+  const selectedInvoiceComponentSubtotal = useMemo(
+    () => selectedInvoiceComponents.reduce((sum, component) => sum + component.cyclePayable, 0),
+    [selectedInvoiceComponents]
+  );
+
+  const selectedInvoiceDiscounts = useMemo(
+    () => invoicePreviewDiscounts.filter((discount) => invoicePreviewSelectedDiscountIds.includes(discount.id)),
+    [invoicePreviewDiscounts, invoicePreviewSelectedDiscountIds]
+  );
+
+  const selectedInvoiceDiscountAmount = useMemo(() => {
+    const rawDiscount = selectedInvoiceDiscounts.reduce((sum, discount) => {
+      if (discount.type === 'PERCENTAGE') {
+        return sum + (selectedInvoiceComponentSubtotal * discount.value) / 100;
+      }
+      return sum + discount.value;
+    }, 0);
+
+    return Math.min(Math.max(rawDiscount, 0), selectedInvoiceComponentSubtotal);
+  }, [selectedInvoiceComponentSubtotal, selectedInvoiceDiscounts]);
+
+  const selectedInvoiceNetAmount = useMemo(
+    () => Math.max(selectedInvoiceComponentSubtotal - selectedInvoiceDiscountAmount, 0),
+    [selectedInvoiceComponentSubtotal, selectedInvoiceDiscountAmount]
+  );
 
   function togglePinnedPanel(panel: PinnedPanelKey) {
     setPinnedPanels((previous) => (previous.includes(panel) ? previous.filter((item) => item !== panel) : [...previous, panel]));
@@ -504,7 +572,7 @@ export function FinancePage() {
     setComponents((previous) => [...previous, { feeType: 'Tuition', cadence: 'YEARLY', amount: '' }]);
   }
 
-  function updateFeeComponentRow(index: number, updates: Partial<{ feeType: string; cadence: 'MONTHLY' | 'YEARLY'; amount: string }>) {
+  function updateFeeComponentRow(index: number, updates: Partial<{ feeType: string; cadence: FeeComponentCadence; amount: string }>) {
     setComponents((previous) => previous.map((component, componentIndex) => (componentIndex === index ? { ...component, ...updates } : component)));
   }
 
@@ -537,7 +605,7 @@ export function FinancePage() {
   }
 
   async function persistAssignment(
-    componentsState: Array<{ feeType: string; cadence: 'MONTHLY' | 'YEARLY'; amount: string }>,
+    componentsState: Array<{ feeType: string; cadence: FeeComponentCadence; amount: string }>,
     successMessage: string
   ) {
     if (!selectedStudentId) {
@@ -598,13 +666,59 @@ export function FinancePage() {
       return;
     }
 
-    if (!selectedSavedAssignment || selectedSavedAssignment.finalTotal <= 0) {
+    if (!selectedSavedAssignment || selectedSavedAssignment.components.length === 0) {
       setAssignmentError('Save a valid fee structure before generating invoice.');
       return;
     }
 
+    const selectableComponents = selectedSavedAssignment.components
+      .map((component) => ({ id: component.id, amount: Number(component.amount || 0), cadence: component.cadence }))
+      .filter((component) => Number.isFinite(component.amount) && component.amount > 0)
+      .map((component) => component.id);
+
+    const defaultSelectedComponents = selectedSavedAssignment.components
+      .map((component) => ({ id: component.id, amount: Number(component.amount || 0), cadence: component.cadence }))
+      .filter((component) => Number.isFinite(component.amount) && component.amount > 0 && component.cadence !== 'ONCE')
+      .map((component) => component.id);
+
+    if (selectableComponents.length === 0) {
+      setAssignmentError('No valid fee components available for invoice generation.');
+      return;
+    }
+
+    const selectableDiscounts =
+      selectedSavedAssignment.discounts && selectedSavedAssignment.discounts.length > 0
+        ? selectedSavedAssignment.discounts.map((discount) => discount.id)
+        : selectedSavedAssignment.discount
+          ? [selectedSavedAssignment.discount.id]
+          : [];
+
+    setInvoicePreviewSelectedComponentIds(defaultSelectedComponents.length > 0 ? defaultSelectedComponents : selectableComponents);
+    setInvoicePreviewSelectedDiscountIds(selectableDiscounts);
     setAssignmentError(null);
     setIsInvoicePreviewOpen(true);
+  }
+
+  function handleToggleInvoicePreviewComponent(componentId: string, checked: boolean) {
+    setInvoicePreviewSelectedComponentIds((previous) => {
+      if (checked) {
+        if (previous.includes(componentId)) return previous;
+        return [...previous, componentId];
+      }
+
+      return previous.filter((id) => id !== componentId);
+    });
+  }
+
+  function handleToggleInvoicePreviewDiscount(discountId: string, checked: boolean) {
+    setInvoicePreviewSelectedDiscountIds((previous) => {
+      if (checked) {
+        if (previous.includes(discountId)) return previous;
+        return [...previous, discountId];
+      }
+
+      return previous.filter((id) => id !== discountId);
+    });
   }
 
   async function handleGenerateInvoice() {
@@ -613,8 +727,18 @@ export function FinancePage() {
       return;
     }
 
-    if (!selectedSavedAssignment || selectedSavedAssignment.finalTotal <= 0) {
+    if (!selectedSavedAssignment) {
       setAssignmentError('Save a valid fee structure before generating invoice.');
+      return;
+    }
+
+    if (selectedInvoiceComponents.length === 0) {
+      setAssignmentError('Select at least one fee component in the invoice preview.');
+      return;
+    }
+
+    if (selectedInvoiceNetAmount <= 0) {
+      setAssignmentError('Selected invoice amount must be greater than zero. Adjust selected discounts/components.');
       return;
     }
 
@@ -622,10 +746,18 @@ export function FinancePage() {
     setAssignmentError(null);
 
     try {
-      const fallbackTitle = `${selectedSavedAssignment.billingCycle} Fee Invoice`;
+      const componentLabels = selectedInvoiceComponents.map((component) => component.feeType.trim()).filter((label) => label.length > 0);
+      const uniqueComponentLabels = Array.from(new Set(componentLabels));
+      const componentSummary =
+        uniqueComponentLabels.length <= 3
+          ? uniqueComponentLabels.join(' + ')
+          : `${uniqueComponentLabels.slice(0, 3).join(' + ')} +${uniqueComponentLabels.length - 3} more`;
+      const fallbackTitle = `${selectedSavedAssignment.billingCycle} Fee Invoice (${componentSummary || 'Selected Components'})`;
+
       await createFeeInvoice({
         admissionNo: selectedStudent.admissionNo,
-        title: fallbackTitle
+        title: fallbackTitle,
+        amount: selectedInvoiceNetAmount
       });
       await loadFinanceData(month);
       setAssignmentMessage('Fee invoice generated successfully.');
@@ -917,7 +1049,7 @@ export function FinancePage() {
     <div className="space-y-1 text-sm">
       {components.map((component, index) => (
         <div key={`summary-${index}`} className="flex items-center justify-between">
-          <span>{component.feeType} ({component.cadence === 'MONTHLY' ? 'Monthly' : 'Yearly'})</span>
+          <span>{component.feeType} ({cadenceLabel(component.cadence)})</span>
           <span className="font-medium text-brand-navy">{formatCurrency(Number(component.amount || 0))}</span>
         </div>
       ))}
@@ -932,6 +1064,10 @@ export function FinancePage() {
       <div className="flex items-center justify-between">
         <span>Monthly Components Total</span>
         <span className="font-medium text-brand-navy">{formatCurrency(monthlySubtotal)}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span>One-Time Components Total</span>
+        <span className="font-medium text-brand-navy">{formatCurrency(onceSubtotal)}</span>
       </div>
       {discounts
         .filter((discount) => {
@@ -1042,10 +1178,11 @@ export function FinancePage() {
                       <select
                         className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white md:col-span-3"
                         value={component.cadence}
-                        onChange={(event) => updateFeeComponentRow(index, { cadence: event.target.value as 'MONTHLY' | 'YEARLY' })}
+                        onChange={(event) => updateFeeComponentRow(index, { cadence: event.target.value as FeeComponentCadence })}
                       >
                         <option value="YEARLY">Yearly</option>
                         <option value="MONTHLY">Monthly</option>
+                        <option value="ONCE">Once</option>
                       </select>
                       <div className="flex items-center rounded-md border border-slate-200/80 bg-slate-50/50 px-3 transition-colors focus-within:border-brand-sky focus-within:bg-white md:col-span-3">
                         <span className="mr-2 text-sm text-slate-500">₹</span>
@@ -1487,10 +1624,10 @@ export function FinancePage() {
                   Invoice Title: <span className="font-semibold text-brand-navy">{selectedSavedAssignment.billingCycle} Fee Invoice</span>
                 </p>
                 <p>
-                  Billing Cycle: <span className="font-semibold text-brand-navy">{invoicePreviewData.installmentLabel}</span>
+                  Billing Cycle: <span className="font-semibold text-brand-navy">{invoicePreviewInstallmentLabel}</span>
                 </p>
                 <p>
-                  Estimated Invoice Amount: <span className="font-semibold text-brand-navy">{formatCurrency(selectedSavedAssignment.installmentAmount)}</span>
+                  Selected Invoice Amount: <span className="font-semibold text-brand-navy">{formatCurrency(selectedInvoiceNetAmount)}</span>
                 </p>
               </div>
               <p className="mt-3 text-xs text-slate-500">Due date will be auto-calculated using school due-day settings at generation time.</p>
@@ -1498,39 +1635,93 @@ export function FinancePage() {
 
             <div className="mt-4 rounded-lg border border-slate-200/80 bg-white">
               <div className="border-b border-slate-100 px-4 py-3">
-                <h5 className="text-sm font-semibold text-brand-navy">Monthly Fee Breakdown</h5>
+                <h5 className="text-sm font-semibold text-brand-navy">Select Fee Components For This Invoice</h5>
               </div>
               <div className="max-h-56 overflow-auto">
                 <table className="min-w-full border-collapse text-left text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 bg-slate-50/80">
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Select</th>
                       <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
-                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Monthly Fee</th>
-                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">{invoicePreviewData.installmentLabel} Payable</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Cadence</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Monthly Payable</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">{invoicePreviewInstallmentLabel} Payable</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {invoicePreviewData.rows.map((row) => (
-                      <tr key={`invoice-preview-row-${row.feeType}`} className="border-b border-slate-100">
-                        <td className="px-4 py-2 text-slate-700">{row.feeType}</td>
-                        <td className="px-4 py-2 text-slate-700">{formatCurrency(row.monthlyPayable)}</td>
-                        <td className="px-4 py-2 font-semibold text-brand-navy">{formatCurrency(row.cyclePayable)}</td>
+                    {invoicePreviewComponents.map((component) => (
+                      <tr key={`invoice-preview-row-${component.id}`} className="border-b border-slate-100">
+                        <td className="px-4 py-2">
+                          <input
+                            type="checkbox"
+                            checked={invoicePreviewSelectedComponentIds.includes(component.id)}
+                            onChange={(event) => handleToggleInvoicePreviewComponent(component.id, event.target.checked)}
+                            className="h-4 w-4 rounded border-slate-300 text-brand-navy focus:ring-brand-sky"
+                          />
+                        </td>
+                        <td className="px-4 py-2 text-slate-700">{component.feeType}</td>
+                        <td className="px-4 py-2 text-slate-600">{cadenceLabel(component.cadence)}</td>
+                        <td className="px-4 py-2 text-slate-700">{component.cadence === 'ONCE' ? '-' : formatCurrency(component.monthlyPayable)}</td>
+                        <td className="px-4 py-2 font-semibold text-brand-navy">{formatCurrency(component.cyclePayable)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                {invoicePreviewData.rows.length === 0 ? <p className="px-4 py-3 text-sm text-slate-500">No fee components available for preview.</p> : null}
+                {invoicePreviewComponents.length === 0 ? <p className="px-4 py-3 text-sm text-slate-500">No fee components available for preview.</p> : null}
               </div>
             </div>
 
+            {invoicePreviewDiscounts.length > 0 ? (
+              <div className="mt-4 rounded-lg border border-slate-200/80 bg-white">
+                <div className="border-b border-slate-100 px-4 py-3">
+                  <h5 className="text-sm font-semibold text-brand-navy">Select Discount Components</h5>
+                </div>
+                <div className="max-h-40 overflow-auto">
+                  <table className="min-w-full border-collapse text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-100 bg-slate-50/80">
+                        <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Select</th>
+                        <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Discount</th>
+                        <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Type</th>
+                        <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Impact</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {invoicePreviewDiscounts.map((discount) => {
+                        const impact =
+                          discount.type === 'PERCENTAGE'
+                            ? (selectedInvoiceComponentSubtotal * discount.value) / 100
+                            : discount.value;
+                        return (
+                          <tr key={`invoice-preview-discount-${discount.id}`} className="border-b border-slate-100">
+                            <td className="px-4 py-2">
+                              <input
+                                type="checkbox"
+                                checked={invoicePreviewSelectedDiscountIds.includes(discount.id)}
+                                onChange={(event) => handleToggleInvoicePreviewDiscount(discount.id, event.target.checked)}
+                                className="h-4 w-4 rounded border-slate-300 text-brand-navy focus:ring-brand-sky"
+                              />
+                            </td>
+                            <td className="px-4 py-2 text-slate-700">{discount.reason?.trim() || 'Discount'}</td>
+                            <td className="px-4 py-2 text-slate-600">{discount.type === 'PERCENTAGE' ? `${discount.value}%` : 'Flat'}</td>
+                            <td className="px-4 py-2 font-semibold text-brand-navy">- {formatCurrency(Math.min(impact, selectedInvoiceComponentSubtotal))}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : null}
+
             <div className="mt-4 rounded-lg border border-slate-200/80 bg-slate-50/60 p-4 text-sm">
               <div className="flex items-center justify-between">
-                <span className="text-slate-600">{invoicePreviewData.installmentLabel} Subtotal</span>
-                <span className="font-semibold text-brand-navy">{formatCurrency(invoicePreviewData.cycleSubtotal)}</span>
+                <span className="text-slate-600">Selected {invoicePreviewInstallmentLabel} Subtotal</span>
+                <span className="font-semibold text-brand-navy">{formatCurrency(selectedInvoiceComponentSubtotal)}</span>
               </div>
-              {invoicePreviewData.discounts.length > 0 ? (
+              {selectedInvoiceDiscounts.length > 0 ? (
                 <div className="mt-2 space-y-1 text-xs text-slate-600">
-                  {invoicePreviewData.discounts.map((discount) => (
+                  {selectedInvoiceDiscounts.map((discount) => (
                     <div key={`invoice-preview-discount-${discount.id}`} className="flex items-center justify-between">
                       <span>{discount.reason?.trim() || 'Discount'} ({discount.type === 'PERCENTAGE' ? `${discount.value}%` : formatCurrency(discount.value)})</span>
                     </div>
@@ -1538,16 +1729,16 @@ export function FinancePage() {
                 </div>
               ) : null}
               <div className="mt-2 flex items-center justify-between">
-                <span className="text-slate-600">Discount Applied ({invoicePreviewData.installmentLabel})</span>
-                <span className="font-semibold text-brand-navy">- {formatCurrency(invoicePreviewData.discountPerCycle)}</span>
+                <span className="text-slate-600">Selected Discount Applied ({invoicePreviewInstallmentLabel})</span>
+                <span className="font-semibold text-brand-navy">- {formatCurrency(selectedInvoiceDiscountAmount)}</span>
               </div>
               <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-2">
-                <span className="font-semibold text-brand-navy">Net {invoicePreviewData.installmentLabel} Invoice</span>
-                <span className="text-base font-bold text-brand-navy">{formatCurrency(selectedSavedAssignment.installmentAmount)}</span>
+                <span className="font-semibold text-brand-navy">Net {invoicePreviewInstallmentLabel} Invoice</span>
+                <span className="text-base font-bold text-brand-navy">{formatCurrency(selectedInvoiceNetAmount)}</span>
               </div>
               <div className="mt-2 flex items-center justify-between">
                 <span className="text-slate-600">Net Monthly Payable</span>
-                <span className="font-semibold text-brand-navy">{formatCurrency(invoicePreviewData.monthlyNetPayable)}</span>
+                <span className="font-semibold text-brand-navy">{formatCurrency(selectedSavedAssignment.finalTotal / 12)}</span>
               </div>
             </div>
 
@@ -1562,7 +1753,7 @@ export function FinancePage() {
               <button
                 type="button"
                 onClick={handleGenerateInvoice}
-                disabled={invoiceSaving}
+                disabled={invoiceSaving || selectedInvoiceComponents.length === 0 || selectedInvoiceNetAmount <= 0}
                 className="rounded-md bg-brand-navy px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-navy/90 disabled:opacity-60"
               >
                 {invoiceSaving ? 'Generating Invoice...' : 'Confirm & Generate Invoice'}

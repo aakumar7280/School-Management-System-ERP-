@@ -353,7 +353,10 @@ studentPortalRouter.get('/student-portal/fees', requireStudentOrParent, async (r
           const monthlySubtotal = assignment.components
             .filter((component: (typeof assignment.components)[number]) => component.cadence === 'MONTHLY')
             .reduce((sum: number, component: (typeof assignment.components)[number]) => sum + Number(component.amount), 0);
-          const subtotal = yearlySubtotal + monthlySubtotal * 12;
+          const onceSubtotal = assignment.components
+            .filter((component: (typeof assignment.components)[number]) => component.cadence === 'ONCE')
+            .reduce((sum: number, component: (typeof assignment.components)[number]) => sum + Number(component.amount), 0);
+          const subtotal = yearlySubtotal + monthlySubtotal * 12 + onceSubtotal;
           const parsedDiscounts = parseStoredDiscountEntries(discount);
           const discountAmount = computeDiscountAmount(subtotal, parsedDiscounts);
           const finalTotal = Math.max(subtotal - discountAmount, 0);
@@ -391,6 +394,7 @@ studentPortalRouter.get('/student-portal/fees', requireStudentOrParent, async (r
             subtotal,
             yearlySubtotal,
             monthlySubtotal,
+            onceSubtotal,
             discountAmount,
             finalTotal,
             annualTotal: finalTotal,

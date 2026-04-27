@@ -75,6 +75,8 @@ export function StudentsPage() {
   const [brokenPhotoIds, setBrokenPhotoIds] = useState<Record<string, boolean>>({});
   const [deletingStudentId, setDeletingStudentId] = useState<string | null>(null);
   const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<string | null>(null);
+  const [studentListMode, setStudentListMode] = useState<'active' | 'inactive'>('active');
+  const [deleteDialogStudent, setDeleteDialogStudent] = useState<Student | null>(null);
 
   const [editForm, setEditForm] = useState({
     admissionNo: '',
@@ -124,12 +126,12 @@ export function StudentsPage() {
     transferCertificate: null as File | null
   });
 
-  async function loadStudents() {
+  async function loadStudents(status: 'active' | 'inactive' = studentListMode) {
     setLoading(true);
     setError(null);
 
     try {
-      const data = await fetchStudents();
+      const data = await fetchStudents({ status });
       setStudents(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load students');
@@ -139,7 +141,17 @@ export function StudentsPage() {
   }
 
   useEffect(() => {
-    loadStudents();
+    void loadStudents(studentListMode);
+  }, [studentListMode]);
+
+  useEffect(() => {
+    setSelectedStudent(null);
+    setShowFullDetails(false);
+    setStudentProfile(null);
+    setDeleteDialogStudent(null);
+  }, [studentListMode]);
+
+  useEffect(() => {
     fetchAcademicStructure()
       .then((data) => setGradeSettings(data.grades))
       .catch(() => setGradeSettings([]));
@@ -162,8 +174,11 @@ export function StudentsPage() {
         guardianPhone: ''
       });
       setShowAddForm(false);
+      if (studentListMode !== 'active') {
+        setStudentListMode('active');
+      }
       setMessage('Student added successfully.');
-      await loadStudents();
+      await loadStudents('active');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create student');
     } finally {
@@ -191,16 +206,24 @@ export function StudentsPage() {
     }
   }
 
-  async function handleDeleteStudent(student: Student) {
-    const shouldDelete = window.confirm(`Delete ${student.firstName} ${student.lastName}? This will hide the student from student management.`);
-    if (!shouldDelete) return;
+  function openDeleteDialog(student: Student) {
+    setDeleteDialogStudent(student);
+  }
+
+  function closeDeleteDialog() {
+    if (deletingStudentId) return;
+    setDeleteDialogStudent(null);
+  }
+
+  async function handleDeleteStudent(student: Student, mode: 'soft' | 'hard') {
+    const modeLabel = mode === 'soft' ? 'soft-delete' : 'permanently delete';
 
     setDeletingStudentId(student.id);
     setError(null);
     setMessage(null);
 
     try {
-      await deleteStudent(student.id);
+      await deleteStudent(student.id, mode);
 
       if (selectedStudent?.id === student.id) {
         setSelectedStudent(null);
@@ -209,9 +232,10 @@ export function StudentsPage() {
       }
 
       await loadStudents();
-      setMessage('Student deleted successfully.');
+      setMessage(mode === 'soft' ? 'Student soft deleted successfully.' : 'Student permanently deleted successfully.');
+      setDeleteDialogStudent(null);
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete student');
+      setError(deleteError instanceof Error ? deleteError.message : `Failed to ${modeLabel} student`);
     } finally {
       setDeletingStudentId(null);
     }
@@ -728,6 +752,14 @@ export function StudentsPage() {
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
+        <select
+          className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
+          value={studentListMode}
+          onChange={(event) => setStudentListMode(event.target.value as 'active' | 'inactive')}
+        >
+          <option value="active">Active Students</option>
+          <option value="inactive">Soft Deleted Students</option>
+        </select>
         <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white" value={selectedClass} onChange={(e) => setSelectedClass(e.target.value)}>
           <option value="ALL">All Classes</option>
           {classOptions.map((className) => (
@@ -746,7 +778,7 @@ export function StudentsPage() {
 
       <p className="flex items-center gap-1.5 text-xs text-slate-500">
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand-navy/40" />
-        Showing {filteredStudents.length} student(s)
+        Showing {filteredStudents.length} {studentListMode === 'active' ? 'active' : 'soft deleted'} student(s)
         {selectedClass !== 'ALL' ? ` in Class ${selectedClass}` : ''}
         {selectedSection !== 'ALL' ? ` Section ${selectedSection}` : ''}.
       </p>
@@ -822,12 +854,12 @@ export function StudentsPage() {
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      void handleDeleteStudent(student);
+                      openDeleteDialog(student);
                     }}
                     disabled={deletingStudentId === student.id}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                    aria-label={`Delete ${student.firstName} ${student.lastName}`}
-                    title="Delete student"
+                    aria-label={`${studentListMode === 'active' ? 'Delete' : 'Permanently delete'} ${student.firstName} ${student.lastName}`}
+                    title={studentListMode === 'active' ? 'Delete student' : 'Permanently delete student'}
                   >
                     {deletingStudentId === student.id ? '…' : '×'}
                   </button>
@@ -1112,6 +1144,78 @@ export function StudentsPage() {
       ) : (
         <p className="text-xs text-slate-400">Click any student row to view full details. Use × to collapse the panel and return to full-page list view.</p>
       )}
+
+      {deleteDialogStudent ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200/80 bg-white p-5 shadow-xl">
+            <h4 className="text-lg font-semibold text-brand-navy">Delete Student</h4>
+            <p className="mt-2 text-sm text-slate-600">
+              Student: <span className="font-semibold text-brand-navy">{deleteDialogStudent.firstName} {deleteDialogStudent.lastName}</span> ({deleteDialogStudent.admissionNo})
+            </p>
+
+            {deleteDialogStudent.isActive !== false ? (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-lg border border-amber-200/80 bg-amber-50/60 p-3 text-sm text-amber-900">
+                  Soft delete hides the student from active lists but keeps records for recovery and audit.
+                </div>
+                <div className="rounded-lg border border-red-200/80 bg-red-50/60 p-3 text-sm text-red-800">
+                  Permanent delete removes the student and related records from the database. This cannot be undone.
+                </div>
+                <div className="flex flex-wrap justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={closeDeleteDialog}
+                    disabled={deletingStudentId === deleteDialogStudent.id}
+                    className="rounded-md border border-slate-200 px-4 py-2 text-sm text-brand-navy hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteStudent(deleteDialogStudent, 'soft')}
+                    disabled={deletingStudentId === deleteDialogStudent.id}
+                    className="rounded-md border border-amber-300 bg-amber-100 px-4 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-200 disabled:opacity-60"
+                  >
+                    {deletingStudentId === deleteDialogStudent.id ? 'Deleting...' : 'Soft Delete'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteStudent(deleteDialogStudent, 'hard')}
+                    disabled={deletingStudentId === deleteDialogStudent.id}
+                    className="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+                  >
+                    {deletingStudentId === deleteDialogStudent.id ? 'Deleting...' : 'Delete Permanently'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-lg border border-red-200/80 bg-red-50/60 p-3 text-sm text-red-800">
+                  This student is already soft deleted. You can permanently delete to remove all records from backend.
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={closeDeleteDialog}
+                    disabled={deletingStudentId === deleteDialogStudent.id}
+                    className="rounded-md border border-slate-200 px-4 py-2 text-sm text-brand-navy hover:bg-slate-50 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteStudent(deleteDialogStudent, 'hard')}
+                    disabled={deletingStudentId === deleteDialogStudent.id}
+                    className="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+                  >
+                    {deletingStudentId === deleteDialogStudent.id ? 'Deleting...' : 'Delete Permanently'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

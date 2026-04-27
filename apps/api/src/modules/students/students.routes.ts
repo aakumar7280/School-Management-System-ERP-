@@ -372,6 +372,13 @@ studentsRouter.put(
         return res.status(400).json({ message: 'Only PDF, JPG, PNG, or WEBP files are allowed.' });
       }
 
+      if (typeof error === 'object' && error !== null && 'code' in error) {
+        const code = (error as { code?: string }).code;
+        if (code === 'P2002') {
+          return res.status(409).json({ message: 'Admission number already exists for an active student.' });
+        }
+      }
+
       return res.status(400).json({ message: 'Unable to update student profile.' });
     }
   }
@@ -383,6 +390,8 @@ studentsRouter.get('/students', async (req: AuthenticatedRequest, res) => {
     const className = typeof req.query.className === 'string' ? req.query.className : undefined;
     const section = typeof req.query.section === 'string' ? req.query.section : undefined;
     const sort = typeof req.query.sort === 'string' ? req.query.sort : 'createdAt';
+    const statusQuery = typeof req.query.status === 'string' ? req.query.status.toLowerCase() : 'active';
+    const isActiveFilter = statusQuery === 'inactive' ? false : statusQuery === 'all' ? undefined : true;
 
     const orderBy =
       sort === 'name'
@@ -394,7 +403,7 @@ studentsRouter.get('/students', async (req: AuthenticatedRequest, res) => {
     const students = await prisma.student.findMany({
       where: {
         schoolId,
-        isActive: true,
+        ...(typeof isActiveFilter === 'boolean' ? { isActive: isActiveFilter } : {}),
         ...(className ? { className } : {}),
         ...(section ? { section } : {})
       },
@@ -443,7 +452,7 @@ studentsRouter.post('/students', async (req: AuthenticatedRequest, res) => {
     if (typeof error === 'object' && error !== null && 'code' in error) {
       const code = (error as { code?: string }).code;
       if (code === 'P2002') {
-        return res.status(409).json({ message: 'Admission number already exists.' });
+        return res.status(409).json({ message: 'Admission number already exists for an active student.' });
       }
     }
 
@@ -486,6 +495,13 @@ studentsRouter.patch('/students/:id', async (req: AuthenticatedRequest, res) => 
       return res.status(400).json({ message: 'Validation failed', issues: error.issues });
     }
 
+    if (typeof error === 'object' && error !== null && 'code' in error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'P2002') {
+        return res.status(409).json({ message: 'Admission number already exists for an active student.' });
+      }
+    }
+
     return res.status(400).json({ message: 'Unable to update student.' });
   }
 });
@@ -493,6 +509,7 @@ studentsRouter.patch('/students/:id', async (req: AuthenticatedRequest, res) => 
 studentsRouter.delete('/students/:id', async (req: AuthenticatedRequest, res) => {
   try {
     const schoolId = req.auth!.schoolId;
+    const mode = typeof req.query.mode === 'string' ? req.query.mode.toLowerCase() : 'soft';
 
     const existing = await prisma.student.findFirst({
       where: {
@@ -507,6 +524,14 @@ studentsRouter.delete('/students/:id', async (req: AuthenticatedRequest, res) =>
 
     if (!existing) {
       return res.status(404).json({ message: 'Student not found.' });
+    }
+
+    if (mode === 'hard') {
+      await prisma.student.delete({
+        where: { id: existing.id }
+      });
+
+      return res.json({ message: 'Student permanently deleted successfully.' });
     }
 
     if (!existing.isActive) {

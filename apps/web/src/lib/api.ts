@@ -54,7 +54,7 @@ export interface AdminStudentProfile {
       components: Array<{
         id: string;
         feeType: string;
-        cadence: 'MONTHLY' | 'YEARLY';
+        cadence: 'MONTHLY' | 'YEARLY' | 'ONCE';
         amount: number;
       }>;
       discount: {
@@ -262,7 +262,7 @@ export interface StudentPortalFees {
     components: Array<{
       id: string;
       feeType: string;
-      cadence: 'MONTHLY' | 'YEARLY';
+      cadence: 'MONTHLY' | 'YEARLY' | 'ONCE';
       amount: number;
     }>;
     discount: {
@@ -414,7 +414,7 @@ export interface StudentFeeAssignment {
   components: Array<{
     id: string;
     feeType: string;
-    cadence: 'MONTHLY' | 'YEARLY';
+    cadence: 'MONTHLY' | 'YEARLY' | 'ONCE';
     amount: number;
   }>;
   discount: {
@@ -507,11 +507,17 @@ function formatValidationError(data: unknown, fallbackMessage: string) {
   return fallbackMessage;
 }
 
-export async function fetchStudents(params?: { className?: string; section?: string; sort?: 'createdAt' | 'name' | 'admissionNo' }): Promise<Student[]> {
+export async function fetchStudents(params?: {
+  className?: string;
+  section?: string;
+  sort?: 'createdAt' | 'name' | 'admissionNo';
+  status?: 'active' | 'inactive' | 'all';
+}): Promise<Student[]> {
   const search = new URLSearchParams();
   if (params?.className) search.set('className', params.className);
   if (params?.section) search.set('section', params.section);
   if (params?.sort) search.set('sort', params.sort);
+  if (params?.status) search.set('status', params.status);
 
   const url = `${API_BASE_URL}/students${search.toString() ? `?${search.toString()}` : ''}`;
   const response = await fetch(url, {
@@ -559,8 +565,11 @@ export async function updateStudent(studentId: string, payload: Omit<Student, 'i
   return response.json();
 }
 
-export async function deleteStudent(studentId: string): Promise<{ message: string }> {
-  const response = await fetch(`${API_BASE_URL}/students/${studentId}`, {
+export async function deleteStudent(studentId: string, mode: 'soft' | 'hard' = 'soft'): Promise<{ message: string }> {
+  const search = new URLSearchParams();
+  search.set('mode', mode);
+
+  const response = await fetch(`${API_BASE_URL}/students/${studentId}?${search.toString()}`, {
     method: 'DELETE',
     headers: getAuthHeader()
   });
@@ -1137,7 +1146,7 @@ export async function upsertStudentFeeAssignment(
     billingCycle: 'YEARLY' | 'QUARTERLY' | 'MONTHLY';
     components: Array<{
       feeType: string;
-      cadence: 'MONTHLY' | 'YEARLY';
+      cadence: 'MONTHLY' | 'YEARLY' | 'ONCE';
       amount: number;
     }>;
     discount?: {

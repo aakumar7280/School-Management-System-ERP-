@@ -1,0 +1,1 @@
+ALTER TYPE "FeeComponentCadence" ADD VALUE IF NOT EXISTS 'ONCE';

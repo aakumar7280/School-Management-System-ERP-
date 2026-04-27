@@ -97,7 +97,7 @@ model Student {
   accessUsers   StudentAccess[]
   school        School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
-  @@unique([schoolId, admissionNo])
+  @@index([schoolId, admissionNo])
 }
 
 model StudentFeeAssignment {
@@ -214,6 +214,7 @@ enum FeeBillingCycle {
 enum FeeComponentCadence {
   MONTHLY
   YEARLY
+  ONCE
 }
 
 enum DiscountType {
