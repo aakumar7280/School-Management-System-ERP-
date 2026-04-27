@@ -163,43 +163,49 @@ async function main() {
     }
   });
 
-  const student = await prisma.student.upsert({
+  const existingStudent = await prisma.student.findFirst({
     where: {
-      schoolId_admissionNo: {
-        schoolId: school.id,
-        admissionNo: 'ADM-1001'
-      }
-    },
-    update: {},
-    create: {
       schoolId: school.id,
       admissionNo: 'ADM-1001',
-      firstName: 'Rahul',
-      lastName: 'Sharma',
-      className: '10',
-      section: 'A',
-      guardianPhone: '9876543210'
+      isActive: true
     }
   });
 
-  const student2 = await prisma.student.upsert({
-    where: {
-      schoolId_admissionNo: {
+  const student =
+    existingStudent ??
+    (await prisma.student.create({
+      data: {
         schoolId: school.id,
-        admissionNo: 'ADM-1002'
+        admissionNo: 'ADM-1001',
+        firstName: 'Rahul',
+        lastName: 'Sharma',
+        className: '10',
+        section: 'A',
+        guardianPhone: '9876543210'
       }
-    },
-    update: {},
-    create: {
+    }));
+
+  const existingStudent2 = await prisma.student.findFirst({
+    where: {
       schoolId: school.id,
       admissionNo: 'ADM-1002',
-      firstName: 'Pranav',
-      lastName: 'Kumar',
-      className: '12',
-      section: 'B',
-      guardianPhone: '9876501234'
+      isActive: true
     }
   });
+
+  const student2 =
+    existingStudent2 ??
+    (await prisma.student.create({
+      data: {
+        schoolId: school.id,
+        admissionNo: 'ADM-1002',
+        firstName: 'Pranav',
+        lastName: 'Kumar',
+        className: '12',
+        section: 'B',
+        guardianPhone: '9876501234'
+      }
+    }));
 
   await prisma.studentAccess.upsert({
     where: {
