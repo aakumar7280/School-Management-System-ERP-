@@ -271,6 +271,12 @@ export interface StudentPortalFees {
       value: number;
       reason?: string | null;
     } | null;
+    discounts?: Array<{
+      id: string;
+      type: 'FLAT' | 'PERCENTAGE';
+      value: number;
+      reason?: string | null;
+    }>;
     subtotal: number;
     yearlySubtotal: number;
     monthlySubtotal: number;
@@ -417,6 +423,12 @@ export interface StudentFeeAssignment {
     value: number;
     reason?: string | null;
   } | null;
+  discounts?: Array<{
+    id: string;
+    type: 'FLAT' | 'PERCENTAGE';
+    value: number;
+    reason?: string | null;
+  }>;
   subtotal: number;
   yearlySubtotal: number;
   monthlySubtotal: number;
@@ -1133,6 +1145,11 @@ export async function upsertStudentFeeAssignment(
       value: number;
       reason?: string;
     };
+    discounts?: Array<{
+      type: 'FLAT' | 'PERCENTAGE';
+      value: number;
+      reason?: string;
+    }>;
   }
 ): Promise<{ message: string }> {
   const response = await fetch(`${API_BASE_URL}/fees/student-assignments/${studentId}`, {

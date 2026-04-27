@@ -42,8 +42,87 @@ const upsertFeeAssignmentSchema = z.object({
       value: z.number().min(0),
       reason: z.string().optional()
     })
+    .optional(),
+  discounts: z
+    .array(
+      z.object({
+        type: z.enum(['FLAT', 'PERCENTAGE']),
+        value: z.number().min(0),
+        reason: z.string().optional()
+      })
+    )
     .optional()
 });
+
+const MULTI_DISCOUNT_REASON_PREFIX = 'MULTI_DISCOUNTS_V1:';
+
+type DiscountEntry = {
+  type: 'FLAT' | 'PERCENTAGE';
+  value: number;
+  reason: string | null;
+};
+
+function normalizeDiscountEntries(entries: Array<{ type: 'FLAT' | 'PERCENTAGE'; value: number; reason?: string | null }>) {
+  return entries
+    .map((entry) => ({
+      type: entry.type,
+      value: Number(entry.value),
+      reason: entry.reason?.trim() ? entry.reason.trim() : null
+    }))
+    .filter((entry) => Number.isFinite(entry.value) && entry.value > 0);
+}
+
+function parseStoredDiscountEntries(discount: AssignmentDiscount | undefined): DiscountEntry[] {
+  if (!discount) {
+    return [];
+  }
+
+  const reason = discount.reason ?? '';
+  if (reason.startsWith(MULTI_DISCOUNT_REASON_PREFIX)) {
+    try {
+      const serialized = reason.slice(MULTI_DISCOUNT_REASON_PREFIX.length);
+      const parsed = JSON.parse(serialized) as Array<{ type?: string; value?: number; reason?: string | null }>;
+      if (Array.isArray(parsed)) {
+        return normalizeDiscountEntries(
+          parsed.map((entry) => ({
+            type: entry.type === 'PERCENTAGE' ? 'PERCENTAGE' : 'FLAT',
+            value: Number(entry.value ?? 0),
+            reason: entry.reason ?? null
+          }))
+        );
+      }
+    } catch {
+      // Fall back to legacy discount shape when metadata is malformed.
+    }
+  }
+
+  return normalizeDiscountEntries([
+    {
+      type: discount.type,
+      value: Number(discount.value),
+      reason: discount.reason
+    }
+  ]);
+}
+
+function serializeDiscountEntries(entries: DiscountEntry[]) {
+  if (entries.length === 0) {
+    return null;
+  }
+
+  return `${MULTI_DISCOUNT_REASON_PREFIX}${JSON.stringify(entries)}`;
+}
+
+function computeDiscountAmount(subtotal: number, entries: DiscountEntry[]) {
+  const rawAmount = entries.reduce((sum, entry) => {
+    if (entry.type === 'PERCENTAGE') {
+      return sum + (subtotal * entry.value) / 100;
+    }
+    return sum + entry.value;
+  }, 0);
+
+  return Math.min(Math.max(rawAmount, 0), subtotal);
+}
 
 function getInstallmentCount(billingCycle: 'YEARLY' | 'QUARTERLY' | 'MONTHLY') {
   if (billingCycle === 'MONTHLY') return 12;
@@ -114,14 +193,29 @@ function toAssignmentResponse(assignment: {
     .filter((component) => component.cadence === 'MONTHLY')
     .reduce((sum, component) => sum + Number(component.amount), 0);
   const annualSubtotal = yearlySubtotal + monthlySubtotal * 12;
-  const discountValue = assignment.discount ? Number(assignment.discount.value) : 0;
-  const discountAmount = assignment.discount
-    ? assignment.discount.type === 'PERCENTAGE'
-      ? (annualSubtotal * discountValue) / 100
-      : discountValue
-    : 0;
+  const parsedDiscounts = parseStoredDiscountEntries(assignment.discount);
+  const discountAmount = computeDiscountAmount(annualSubtotal, parsedDiscounts);
   const finalTotal = Math.max(annualSubtotal - discountAmount, 0);
   const installmentCount = getInstallmentCount(assignment.billingCycle);
+
+  const normalizedDiscounts = parsedDiscounts.map((entry, index) => ({
+    id: assignment.discount ? `${assignment.discount.id}-${index + 1}` : `discount-${index + 1}`,
+    type: entry.type,
+    value: entry.value,
+    reason: entry.reason
+  }));
+
+  const primaryDiscount =
+    normalizedDiscounts.length === 0
+      ? null
+      : normalizedDiscounts.length === 1
+        ? normalizedDiscounts[0]
+        : {
+            id: assignment.discount?.id ?? 'multiple-discounts',
+            type: 'FLAT' as const,
+            value: discountAmount,
+            reason: 'Multiple discounts applied'
+          };
 
   return {
     id: assignment.id,
@@ -133,14 +227,8 @@ function toAssignmentResponse(assignment: {
       cadence: component.cadence,
       amount: Number(component.amount)
     })),
-    discount: assignment.discount
-      ? {
-          id: assignment.discount.id,
-          type: assignment.discount.type,
-          value: discountValue,
-          reason: assignment.discount.reason
-        }
-      : null,
+    discounts: normalizedDiscounts,
+    discount: primaryDiscount,
     subtotal: annualSubtotal,
     yearlySubtotal,
     monthlySubtotal,
@@ -278,19 +366,35 @@ feesRouter.put('/fees/student-assignments/:studentId', async (req: Authenticated
         });
       }
 
-      if (payload.discount && payload.discount.value > 0) {
+      const normalizedDiscounts = normalizeDiscountEntries(
+        payload.discounts && payload.discounts.length > 0
+          ? payload.discounts
+          : payload.discount
+            ? [payload.discount]
+            : []
+      );
+
+      const annualSubtotal = payload.components.reduce((sum, component) => {
+        if (component.cadence === 'MONTHLY') {
+          return sum + component.amount * 12;
+        }
+        return sum + component.amount;
+      }, 0);
+      const discountAmount = computeDiscountAmount(annualSubtotal, normalizedDiscounts);
+
+      if (normalizedDiscounts.length > 0 && discountAmount > 0) {
         await tx.discount.upsert({
           where: { studentId: req.params.studentId },
           update: {
-            type: payload.discount.type,
-            value: payload.discount.value,
-            reason: payload.discount.reason || null
+            type: 'FLAT',
+            value: discountAmount,
+            reason: serializeDiscountEntries(normalizedDiscounts)
           },
           create: {
             studentId: req.params.studentId,
-            type: payload.discount.type,
-            value: payload.discount.value,
-            reason: payload.discount.reason || null
+            type: 'FLAT',
+            value: discountAmount,
+            reason: serializeDiscountEntries(normalizedDiscounts)
           }
         });
       } else {

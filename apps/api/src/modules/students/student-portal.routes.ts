@@ -79,6 +79,68 @@ const payStudentInvoiceSchema = z.object({
   feeType: z.string().min(1).optional()
 });
 
+const MULTI_DISCOUNT_REASON_PREFIX = 'MULTI_DISCOUNTS_V1:';
+
+type DiscountEntry = {
+  type: 'FLAT' | 'PERCENTAGE';
+  value: number;
+  reason: string | null;
+};
+
+function normalizeDiscountEntries(entries: Array<{ type: 'FLAT' | 'PERCENTAGE'; value: number; reason?: string | null }>) {
+  return entries
+    .map((entry) => ({
+      type: entry.type,
+      value: Number(entry.value),
+      reason: entry.reason?.trim() ? entry.reason.trim() : null
+    }))
+    .filter((entry) => Number.isFinite(entry.value) && entry.value > 0);
+}
+
+function parseStoredDiscountEntries(discount: { type: 'FLAT' | 'PERCENTAGE'; value: unknown; reason: string | null } | null): DiscountEntry[] {
+  if (!discount) {
+    return [];
+  }
+
+  const reason = discount.reason ?? '';
+  if (reason.startsWith(MULTI_DISCOUNT_REASON_PREFIX)) {
+    try {
+      const serialized = reason.slice(MULTI_DISCOUNT_REASON_PREFIX.length);
+      const parsed = JSON.parse(serialized) as Array<{ type?: string; value?: number; reason?: string | null }>;
+      if (Array.isArray(parsed)) {
+        return normalizeDiscountEntries(
+          parsed.map((entry) => ({
+            type: entry.type === 'PERCENTAGE' ? 'PERCENTAGE' : 'FLAT',
+            value: Number(entry.value ?? 0),
+            reason: entry.reason ?? null
+          }))
+        );
+      }
+    } catch {
+      // Fall back to single legacy discount shape.
+    }
+  }
+
+  return normalizeDiscountEntries([
+    {
+      type: discount.type,
+      value: Number(discount.value),
+      reason: discount.reason
+    }
+  ]);
+}
+
+function computeDiscountAmount(subtotal: number, entries: DiscountEntry[]) {
+  const rawAmount = entries.reduce((sum, entry) => {
+    if (entry.type === 'PERCENTAGE') {
+      return sum + (subtotal * entry.value) / 100;
+    }
+    return sum + entry.value;
+  }, 0);
+
+  return Math.min(Math.max(rawAmount, 0), subtotal);
+}
+
 async function resolveMappedStudent(req: AuthenticatedRequest) {
   if (!req.auth?.userId) return null;
 
@@ -292,9 +354,28 @@ studentPortalRouter.get('/student-portal/fees', requireStudentOrParent, async (r
             .filter((component: (typeof assignment.components)[number]) => component.cadence === 'MONTHLY')
             .reduce((sum: number, component: (typeof assignment.components)[number]) => sum + Number(component.amount), 0);
           const subtotal = yearlySubtotal + monthlySubtotal * 12;
-          const discountValue = discount ? Number(discount.value) : 0;
-          const discountAmount = discount ? (discount.type === 'PERCENTAGE' ? (subtotal * discountValue) / 100 : discountValue) : 0;
+          const parsedDiscounts = parseStoredDiscountEntries(discount);
+          const discountAmount = computeDiscountAmount(subtotal, parsedDiscounts);
           const finalTotal = Math.max(subtotal - discountAmount, 0);
+
+          const normalizedDiscounts = parsedDiscounts.map((entry, index) => ({
+            id: discount ? `${discount.id}-${index + 1}` : `discount-${index + 1}`,
+            type: entry.type,
+            value: entry.value,
+            reason: entry.reason
+          }));
+
+          const primaryDiscount =
+            normalizedDiscounts.length === 0
+              ? null
+              : normalizedDiscounts.length === 1
+                ? normalizedDiscounts[0]
+                : {
+                    id: discount?.id ?? 'multiple-discounts',
+                    type: 'FLAT' as const,
+                    value: discountAmount,
+                    reason: 'Multiple discounts applied'
+                  };
 
           return {
             id: assignment.id,
@@ -305,14 +386,8 @@ studentPortalRouter.get('/student-portal/fees', requireStudentOrParent, async (r
               cadence: component.cadence,
               amount: Number(component.amount)
             })),
-            discount: discount
-              ? {
-                  id: discount.id,
-                  type: discount.type,
-                  value: discountValue,
-                  reason: discount.reason
-                }
-              : null,
+            discounts: normalizedDiscounts,
+            discount: primaryDiscount,
             subtotal,
             yearlySubtotal,
             monthlySubtotal,

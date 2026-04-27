@@ -30,6 +30,7 @@ interface CollapsiblePanelProps {
 
 type AccordionPanelKey = 'studentSelection' | 'feeComponents' | 'discount' | 'dues' | 'transactions';
 type PinnedPanelKey = 'studentSelection' | 'summary';
+type DiscountRow = { id: string; type: 'FLAT' | 'PERCENTAGE'; value: string; reason: string };
 
 function CollapsiblePanel({ title, isOpen, onToggle, children, rightSlot }: CollapsiblePanelProps) {
   return (
@@ -65,9 +66,7 @@ export function FinancePage() {
   const [studentClassFilter, setStudentClassFilter] = useState('all');
   const [billingCycle, setBillingCycle] = useState<'YEARLY' | 'QUARTERLY' | 'MONTHLY'>('MONTHLY');
   const [components, setComponents] = useState<Array<{ feeType: string; cadence: 'MONTHLY' | 'YEARLY'; amount: string }>>([]);
-  const [discountType, setDiscountType] = useState<'FLAT' | 'PERCENTAGE'>('FLAT');
-  const [discountValue, setDiscountValue] = useState('0');
-  const [discountReason, setDiscountReason] = useState('');
+  const [discounts, setDiscounts] = useState<DiscountRow[]>([]);
   const [assignmentLoading, setAssignmentLoading] = useState(true);
   const [assignmentSaving, setAssignmentSaving] = useState(false);
   const [assignmentMessage, setAssignmentMessage] = useState<string | null>(null);
@@ -91,11 +90,12 @@ export function FinancePage() {
   const [clearingTransactions, setClearingTransactions] = useState(false);
   const [paymentMessage, setPaymentMessage] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [isInvoicePreviewOpen, setIsInvoicePreviewOpen] = useState(false);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [activeAccordionPanel, setActiveAccordionPanel] = useState<AccordionPanelKey | null>('studentSelection');
   const [pinnedPanels, setPinnedPanels] = useState<PinnedPanelKey[]>(['summary']);
 
-  const feeTypeOptions = ['Tuition', 'Transport', 'Meals', 'Sports', 'Lab', 'Library', 'Hostel', 'Exam', 'Other'];
+  const feeTypeOptions = ['Tuition', 'Transport', 'Meals', 'Uniform', 'Sports', 'Lab', 'Library', 'Hostel', 'Exam', 'Other'];
 
   const classFilterOptions = useMemo(() => {
     const options = new Set<string>();
@@ -206,6 +206,67 @@ export function FinancePage() {
     return allTransactions.filter((transaction) => transaction.student.admissionNo === selectedStudent.admissionNo);
   }, [overview?.feeTransactions, selectedStudent]);
 
+  const activePaymentInvoice = useMemo(
+    () => filteredDueStudents.find((invoice) => invoice.id === activePaymentInvoiceId) ?? null,
+    [activePaymentInvoiceId, filteredDueStudents]
+  );
+
+  const paymentFeeBreakdown = useMemo(() => {
+    if (!activePaymentInvoice || !selectedSavedAssignment || selectedSavedAssignment.components.length === 0) {
+      return [];
+    }
+
+    const installmentCount =
+      selectedSavedAssignment.billingCycle === 'MONTHLY'
+        ? 12
+        : selectedSavedAssignment.billingCycle === 'QUARTERLY'
+          ? 4
+          : 1;
+    const monthlyMultiplier = selectedSavedAssignment.billingCycle === 'MONTHLY' ? 1 : selectedSavedAssignment.billingCycle === 'QUARTERLY' ? 3 : 12;
+
+    const grouped = new Map<string, { monthlyPayable: number; installmentPayable: number }>();
+
+    selectedSavedAssignment.components.forEach((component) => {
+      const componentAmount = Number(component.amount || 0);
+      if (!Number.isFinite(componentAmount) || componentAmount <= 0) {
+        return;
+      }
+
+      const monthlyPayable = component.cadence === 'MONTHLY' ? componentAmount : componentAmount / 12;
+      const installmentPayable = component.cadence === 'MONTHLY' ? componentAmount * monthlyMultiplier : componentAmount / installmentCount;
+      const current = grouped.get(component.feeType) ?? { monthlyPayable: 0, installmentPayable: 0 };
+
+      grouped.set(component.feeType, {
+        monthlyPayable: current.monthlyPayable + monthlyPayable,
+        installmentPayable: current.installmentPayable + installmentPayable
+      });
+    });
+
+    const installmentSubtotal = Array.from(grouped.values()).reduce((sum, value) => sum + value.installmentPayable, 0);
+    if (installmentSubtotal <= 0) {
+      return [];
+    }
+
+    const invoiceDue = Math.max(activePaymentInvoice.due, 0);
+
+    return Array.from(grouped.entries())
+      .map(([feeType, value]) => ({
+        feeType,
+        monthlyPayable: value.monthlyPayable,
+        installmentPayable: value.installmentPayable,
+        suggestedDueShare: (value.installmentPayable / installmentSubtotal) * invoiceDue
+      }))
+      .sort((left, right) => right.suggestedDueShare - left.suggestedDueShare);
+  }, [activePaymentInvoice, selectedSavedAssignment]);
+
+  const paymentFeeTypeOptions = useMemo(() => {
+    if (paymentFeeBreakdown.length > 0) {
+      return paymentFeeBreakdown.map((item) => item.feeType);
+    }
+
+    return Array.from(new Set([paymentFeeType, ...feeTypeOptions])).filter((item) => item.trim().length > 0);
+  }, [feeTypeOptions, paymentFeeBreakdown, paymentFeeType]);
+
   const yearlySubtotal = useMemo(
     () =>
       components
@@ -225,11 +286,21 @@ export function FinancePage() {
   const subtotal = useMemo(() => yearlySubtotal + monthlySubtotal * 12, [yearlySubtotal, monthlySubtotal]);
 
   const computedDiscountAmount = useMemo(() => {
-    const parsed = Number(discountValue || 0);
-    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-    if (discountType === 'PERCENTAGE') return (subtotal * parsed) / 100;
-    return parsed;
-  }, [discountType, discountValue, subtotal]);
+    const rawDiscountAmount = discounts.reduce((sum, discount) => {
+      const parsedValue = Number(discount.value || 0);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+        return sum;
+      }
+
+      if (discount.type === 'PERCENTAGE') {
+        return sum + (subtotal * parsedValue) / 100;
+      }
+
+      return sum + parsedValue;
+    }, 0);
+
+    return Math.min(Math.max(rawDiscountAmount, 0), subtotal);
+  }, [discounts, subtotal]);
 
   const finalTotal = useMemo(() => Math.max(subtotal - computedDiscountAmount, 0), [subtotal, computedDiscountAmount]);
   const configuredInstallmentAmount = useMemo(() => {
@@ -253,6 +324,79 @@ export function FinancePage() {
     [carryForwardDueTotal, effectiveNextMonthDue]
   );
 
+  const invoicePreviewData = useMemo(() => {
+    if (!selectedSavedAssignment) {
+      return {
+        installmentLabel: 'Monthly',
+        rows: [] as Array<{ feeType: string; monthlyPayable: number; cyclePayable: number }>,
+        cycleSubtotal: 0,
+        discountPerCycle: 0,
+        cycleNetPayable: 0,
+        monthlyNetPayable: 0,
+        discounts: [] as Array<{ id: string; type: 'FLAT' | 'PERCENTAGE'; value: number; reason?: string | null }>
+      };
+    }
+
+    const installmentCount =
+      selectedSavedAssignment.billingCycle === 'MONTHLY'
+        ? 12
+        : selectedSavedAssignment.billingCycle === 'QUARTERLY'
+          ? 4
+          : 1;
+    const cycleMonthMultiplier =
+      selectedSavedAssignment.billingCycle === 'MONTHLY'
+        ? 1
+        : selectedSavedAssignment.billingCycle === 'QUARTERLY'
+          ? 3
+          : 12;
+
+    const grouped = new Map<string, { monthlyPayable: number; cyclePayable: number }>();
+    selectedSavedAssignment.components.forEach((component) => {
+      const value = Number(component.amount || 0);
+      if (!Number.isFinite(value) || value <= 0) {
+        return;
+      }
+
+      const monthlyPayable = component.cadence === 'MONTHLY' ? value : value / 12;
+      const cyclePayable = component.cadence === 'MONTHLY' ? value * cycleMonthMultiplier : value / installmentCount;
+      const current = grouped.get(component.feeType) ?? { monthlyPayable: 0, cyclePayable: 0 };
+      grouped.set(component.feeType, {
+        monthlyPayable: current.monthlyPayable + monthlyPayable,
+        cyclePayable: current.cyclePayable + cyclePayable
+      });
+    });
+
+    const rows = Array.from(grouped.entries())
+      .map(([feeType, value]) => ({ feeType, monthlyPayable: value.monthlyPayable, cyclePayable: value.cyclePayable }))
+      .sort((left, right) => right.cyclePayable - left.cyclePayable);
+
+    const cycleSubtotal = rows.reduce((sum, row) => sum + row.cyclePayable, 0);
+    const discountPerCycle = Math.min(Math.max(selectedSavedAssignment.discountAmount / installmentCount, 0), cycleSubtotal);
+    const cycleNetPayable = Math.max(cycleSubtotal - discountPerCycle, 0);
+
+    const discounts =
+      selectedSavedAssignment.discounts && selectedSavedAssignment.discounts.length > 0
+        ? selectedSavedAssignment.discounts
+        : selectedSavedAssignment.discount
+          ? [selectedSavedAssignment.discount]
+          : [];
+
+    return {
+      installmentLabel:
+        selectedSavedAssignment.billingCycle === 'MONTHLY'
+          ? 'Monthly'
+          : selectedSavedAssignment.billingCycle === 'QUARTERLY'
+            ? 'Quarterly'
+            : 'Yearly',
+      rows,
+      cycleSubtotal,
+      discountPerCycle,
+      cycleNetPayable,
+      monthlyNetPayable: selectedSavedAssignment.finalTotal / 12,
+      discounts
+    };
+  }, [selectedSavedAssignment]);
+
   function togglePinnedPanel(panel: PinnedPanelKey) {
     setPinnedPanels((previous) => (previous.includes(panel) ? previous.filter((item) => item !== panel) : [...previous, panel]));
   }
@@ -265,9 +409,7 @@ export function FinancePage() {
   function resetDynamicFeeForm() {
     setBillingCycle('MONTHLY');
     setComponents([]);
-    setDiscountType('FLAT');
-    setDiscountValue('0');
-    setDiscountReason('');
+    setDiscounts([]);
   }
 
   function selectStudentForAssignment(studentId: string) {
@@ -339,9 +481,21 @@ export function FinancePage() {
     setSelectedStudentId(assignment.studentId);
     setBillingCycle(assignment.billingCycle);
     setComponents(assignment.components.map((component) => ({ feeType: component.feeType, cadence: component.cadence, amount: String(component.amount) })));
-    setDiscountType(assignment.discount?.type ?? 'FLAT');
-    setDiscountValue(String(assignment.discount?.value ?? 0));
-    setDiscountReason(assignment.discount?.reason ?? '');
+    const assignmentDiscounts =
+      assignment.discounts && assignment.discounts.length > 0
+        ? assignment.discounts
+        : assignment.discount
+          ? [assignment.discount]
+          : [];
+
+    setDiscounts(
+      assignmentDiscounts.map((discount, index) => ({
+        id: `${discount.id}-${index + 1}`,
+        type: discount.type,
+        value: String(discount.value),
+        reason: discount.reason ?? ''
+      }))
+    );
     setAssignmentMessage(null);
     setAssignmentError(null);
   }
@@ -363,6 +517,23 @@ export function FinancePage() {
     }
 
     void persistAssignment(nextComponents, nextComponents.length === 0 ? 'All fee components removed.' : 'Fee component removed successfully.');
+  }
+
+  function addDiscountRow() {
+    setDiscounts((previous) => [
+      ...previous,
+      { id: `${Date.now()}-${previous.length}`, type: 'FLAT', value: '', reason: '' }
+    ]);
+  }
+
+  function updateDiscountRow(discountId: string, updates: Partial<Omit<DiscountRow, 'id'>>) {
+    setDiscounts((previous) =>
+      previous.map((discount) => (discount.id === discountId ? { ...discount, ...updates } : discount))
+    );
+  }
+
+  function removeDiscountRow(discountId: string) {
+    setDiscounts((previous) => previous.filter((discount) => discount.id !== discountId));
   }
 
   async function persistAssignment(
@@ -387,19 +558,19 @@ export function FinancePage() {
         }))
         .filter((component) => component.feeType.length > 0 && Number.isFinite(component.amount) && component.amount >= 0);
 
-      const parsedDiscountValue = Number(discountValue || 0);
+      const normalizedDiscounts = discounts
+        .map((discount) => ({
+          type: discount.type,
+          value: Number(discount.value || 0),
+          reason: discount.reason.trim() || undefined
+        }))
+        .filter((discount) => Number.isFinite(discount.value) && discount.value > 0);
 
       await upsertStudentFeeAssignment(selectedStudentId, {
         billingCycle,
         components: normalizedComponents,
-        discount:
-          Number.isFinite(parsedDiscountValue) && parsedDiscountValue > 0
-            ? {
-                type: discountType,
-                value: parsedDiscountValue,
-                reason: discountReason.trim() || undefined
-              }
-            : undefined
+        discounts: normalizedDiscounts,
+        discount: normalizedDiscounts.length === 1 ? normalizedDiscounts[0] : undefined
       });
 
       const refreshed = await fetchStudentFeeAssignments();
@@ -419,6 +590,21 @@ export function FinancePage() {
 
   async function handleSaveAssignment() {
     await persistAssignment(components, 'Student fee structure saved successfully.');
+  }
+
+  function handleOpenInvoicePreview() {
+    if (!selectedStudent) {
+      setAssignmentError('Please select a student first.');
+      return;
+    }
+
+    if (!selectedSavedAssignment || selectedSavedAssignment.finalTotal <= 0) {
+      setAssignmentError('Save a valid fee structure before generating invoice.');
+      return;
+    }
+
+    setAssignmentError(null);
+    setIsInvoicePreviewOpen(true);
   }
 
   async function handleGenerateInvoice() {
@@ -443,6 +629,7 @@ export function FinancePage() {
       });
       await loadFinanceData(month);
       setAssignmentMessage('Fee invoice generated successfully.');
+      setIsInvoicePreviewOpen(false);
     } catch (saveError) {
       setAssignmentError(saveError instanceof Error ? saveError.message : 'Failed to generate fee invoice');
     } finally {
@@ -511,11 +698,14 @@ export function FinancePage() {
     const invoice = filteredDueStudents.find((row) => row.id === invoiceId);
     if (!invoice) return;
 
+    const fallbackFeeType =
+      selectedSavedAssignment?.components.find((component) => component.feeType.trim().length > 0)?.feeType ?? 'General';
+
     setActivePaymentInvoiceId(invoiceId);
     setIsPaymentModalOpen(true);
     setPaymentAmount(String(invoice.due));
     setPaymentMethod('UPI');
-    setPaymentFeeType('Tuition');
+    setPaymentFeeType(fallbackFeeType);
     setPaymentError(null);
     setPaymentMessage(null);
   }
@@ -543,6 +733,30 @@ export function FinancePage() {
       setPaymentAmount(String(selectedInvoice.due));
     }
   }
+
+  function handlePaymentFeeTypeChange(nextFeeType: string) {
+    setPaymentFeeType(nextFeeType);
+
+    if (!activePaymentInvoice) {
+      return;
+    }
+
+    const selectedFeeBreakdown = paymentFeeBreakdown.find((entry) => entry.feeType === nextFeeType);
+    if (selectedFeeBreakdown) {
+      setPaymentAmount(String(Math.min(activePaymentInvoice.due, selectedFeeBreakdown.suggestedDueShare)));
+    }
+  }
+
+  useEffect(() => {
+    if (!activePaymentInvoice || !paymentFeeType) {
+      return;
+    }
+
+    const selectedFeeBreakdown = paymentFeeBreakdown.find((entry) => entry.feeType === paymentFeeType);
+    if (selectedFeeBreakdown) {
+      setPaymentAmount(String(Math.min(activePaymentInvoice.due, selectedFeeBreakdown.suggestedDueShare)));
+    }
+  }, [activePaymentInvoice, paymentFeeBreakdown, paymentFeeType]);
 
   async function handleRecordPayment() {
     const invoice = filteredDueStudents.find((row) => row.id === activePaymentInvoiceId);
@@ -719,8 +933,25 @@ export function FinancePage() {
         <span>Monthly Components Total</span>
         <span className="font-medium text-brand-navy">{formatCurrency(monthlySubtotal)}</span>
       </div>
+      {discounts
+        .filter((discount) => {
+          const parsedValue = Number(discount.value || 0);
+          return Number.isFinite(parsedValue) && parsedValue > 0;
+        })
+        .map((discount) => {
+          const parsedValue = Number(discount.value || 0);
+          const resolvedAmount = discount.type === 'PERCENTAGE' ? (subtotal * parsedValue) / 100 : parsedValue;
+          return (
+            <div key={`summary-discount-${discount.id}`} className="flex items-center justify-between text-xs">
+              <span>
+                {discount.reason.trim() || 'Discount'} ({discount.type === 'PERCENTAGE' ? `${parsedValue}%` : formatCurrency(parsedValue)})
+              </span>
+              <span className="font-medium text-brand-navy">- {formatCurrency(resolvedAmount)}</span>
+            </div>
+          );
+        })}
       <div className="flex items-center justify-between">
-        <span>Discount</span>
+        <span>Total Discount</span>
         <span className="font-medium text-brand-navy">- {formatCurrency(computedDiscountAmount)}</span>
       </div>
       <div className="flex items-center justify-between border-t border-slate-200/80 pt-2 text-base">
@@ -853,26 +1084,50 @@ export function FinancePage() {
                   isOpen={activeAccordionPanel === 'discount'}
                   onToggle={() => setActiveAccordionPanel((previous) => (previous === 'discount' ? null : 'discount'))}
                 >
-              <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-                <select className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white" value={discountType} onChange={(e) => setDiscountType(e.target.value as 'FLAT' | 'PERCENTAGE')}>
-                  <option value="FLAT">Flat Amount (₹)</option>
-                  <option value="PERCENTAGE">Percentage (%)</option>
-                </select>
-                <input
-                  className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder={discountType === 'FLAT' ? 'Enter amount' : 'Enter percentage'}
-                  value={discountValue}
-                  onChange={(e) => setDiscountValue(e.target.value)}
-                />
-                <input
-                  className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
-                  placeholder="Reason (optional)"
-                  value={discountReason}
-                  onChange={(e) => setDiscountReason(e.target.value)}
-                />
+              <div className="space-y-3">
+                {discounts.length === 0 ? <p className="text-sm text-slate-500">No discounts added yet.</p> : null}
+                {discounts.map((discount) => (
+                  <div key={discount.id} className="grid grid-cols-1 gap-2 md:grid-cols-12">
+                    <select
+                      className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white md:col-span-3"
+                      value={discount.type}
+                      onChange={(event) => updateDiscountRow(discount.id, { type: event.target.value as 'FLAT' | 'PERCENTAGE' })}
+                    >
+                      <option value="FLAT">Flat Amount (₹)</option>
+                      <option value="PERCENTAGE">Percentage (%)</option>
+                    </select>
+                    <input
+                      className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white md:col-span-3"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder={discount.type === 'FLAT' ? 'Enter amount' : 'Enter percentage'}
+                      value={discount.value}
+                      onChange={(event) => updateDiscountRow(discount.id, { value: event.target.value })}
+                    />
+                    <input
+                      className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white md:col-span-5"
+                      placeholder="Reason (optional)"
+                      value={discount.reason}
+                      onChange={(event) => updateDiscountRow(discount.id, { reason: event.target.value })}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeDiscountRow(discount.id)}
+                      className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 md:col-span-1"
+                    >
+                      X
+                    </button>
+                  </div>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={addDiscountRow}
+                  className="rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-brand-navy hover:bg-slate-50"
+                >
+                  + Add Discount
+                </button>
               </div>
                 </CollapsiblePanel>
 
@@ -985,11 +1240,11 @@ export function FinancePage() {
                   </button>
                   <button
                     type="button"
-                    onClick={handleGenerateInvoice}
+                    onClick={handleOpenInvoicePreview}
                     disabled={invoiceSaving || !selectedStudent || !selectedSavedAssignment}
                     className="rounded-md bg-brand-navy px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-navy/90 disabled:opacity-60"
                   >
-                    {invoiceSaving ? 'Generating Invoice...' : 'Generate Fee Invoice'}
+                    {invoiceSaving ? 'Generating Invoice...' : 'Preview & Generate Invoice'}
                   </button>
                 </div>
               </div>
@@ -1200,6 +1455,123 @@ export function FinancePage() {
         </aside>
       </div>
 
+      {isInvoicePreviewOpen && selectedStudent && selectedSavedAssignment ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-3xl rounded-xl border border-slate-200/80 bg-white p-5 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h4 className="text-lg font-semibold text-brand-navy">Invoice Preview</h4>
+                <p className="text-xs text-slate-500">Review invoice details and monthly fee breakdown before generation.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsInvoicePreviewOpen(false)}
+                className="rounded-md border border-slate-200 px-3 py-1 text-sm text-brand-navy hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="rounded-lg border border-slate-200/80 bg-slate-50/50 p-4">
+              <div className="grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
+                <p>
+                  Student: <span className="font-semibold text-brand-navy">{selectedStudent.firstName} {selectedStudent.lastName}</span>
+                </p>
+                <p>
+                  Admission No: <span className="font-semibold text-brand-navy">{selectedStudent.admissionNo}</span>
+                </p>
+                <p>
+                  Class/Section: <span className="font-semibold text-brand-navy">{selectedStudent.className}/{selectedStudent.section}</span>
+                </p>
+                <p>
+                  Invoice Title: <span className="font-semibold text-brand-navy">{selectedSavedAssignment.billingCycle} Fee Invoice</span>
+                </p>
+                <p>
+                  Billing Cycle: <span className="font-semibold text-brand-navy">{invoicePreviewData.installmentLabel}</span>
+                </p>
+                <p>
+                  Estimated Invoice Amount: <span className="font-semibold text-brand-navy">{formatCurrency(selectedSavedAssignment.installmentAmount)}</span>
+                </p>
+              </div>
+              <p className="mt-3 text-xs text-slate-500">Due date will be auto-calculated using school due-day settings at generation time.</p>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-slate-200/80 bg-white">
+              <div className="border-b border-slate-100 px-4 py-3">
+                <h5 className="text-sm font-semibold text-brand-navy">Monthly Fee Breakdown</h5>
+              </div>
+              <div className="max-h-56 overflow-auto">
+                <table className="min-w-full border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-100 bg-slate-50/80">
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Monthly Fee</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">{invoicePreviewData.installmentLabel} Payable</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invoicePreviewData.rows.map((row) => (
+                      <tr key={`invoice-preview-row-${row.feeType}`} className="border-b border-slate-100">
+                        <td className="px-4 py-2 text-slate-700">{row.feeType}</td>
+                        <td className="px-4 py-2 text-slate-700">{formatCurrency(row.monthlyPayable)}</td>
+                        <td className="px-4 py-2 font-semibold text-brand-navy">{formatCurrency(row.cyclePayable)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {invoicePreviewData.rows.length === 0 ? <p className="px-4 py-3 text-sm text-slate-500">No fee components available for preview.</p> : null}
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-slate-200/80 bg-slate-50/60 p-4 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">{invoicePreviewData.installmentLabel} Subtotal</span>
+                <span className="font-semibold text-brand-navy">{formatCurrency(invoicePreviewData.cycleSubtotal)}</span>
+              </div>
+              {invoicePreviewData.discounts.length > 0 ? (
+                <div className="mt-2 space-y-1 text-xs text-slate-600">
+                  {invoicePreviewData.discounts.map((discount) => (
+                    <div key={`invoice-preview-discount-${discount.id}`} className="flex items-center justify-between">
+                      <span>{discount.reason?.trim() || 'Discount'} ({discount.type === 'PERCENTAGE' ? `${discount.value}%` : formatCurrency(discount.value)})</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="mt-2 flex items-center justify-between">
+                <span className="text-slate-600">Discount Applied ({invoicePreviewData.installmentLabel})</span>
+                <span className="font-semibold text-brand-navy">- {formatCurrency(invoicePreviewData.discountPerCycle)}</span>
+              </div>
+              <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-2">
+                <span className="font-semibold text-brand-navy">Net {invoicePreviewData.installmentLabel} Invoice</span>
+                <span className="text-base font-bold text-brand-navy">{formatCurrency(selectedSavedAssignment.installmentAmount)}</span>
+              </div>
+              <div className="mt-2 flex items-center justify-between">
+                <span className="text-slate-600">Net Monthly Payable</span>
+                <span className="font-semibold text-brand-navy">{formatCurrency(invoicePreviewData.monthlyNetPayable)}</span>
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsInvoicePreviewOpen(false)}
+                className="rounded-md border border-slate-200 px-4 py-2 text-sm text-brand-navy hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleGenerateInvoice}
+                disabled={invoiceSaving}
+                className="rounded-md bg-brand-navy px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-navy/90 disabled:opacity-60"
+              >
+                {invoiceSaving ? 'Generating Invoice...' : 'Confirm & Generate Invoice'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {isPaymentModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-2xl rounded-xl border border-slate-200/80 bg-white p-5 shadow-xl">
@@ -1233,6 +1605,40 @@ export function FinancePage() {
                 </select>
               </div>
 
+              <div className="md:col-span-2 rounded-md border border-slate-200/80 bg-slate-50/50 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Fee Structure Payable</p>
+                  <p className="text-xs text-slate-500">Invoice Due: <span className="font-semibold text-brand-navy">{formatCurrency(activePaymentInvoice?.due ?? 0)}</span></p>
+                </div>
+
+                {paymentFeeBreakdown.length === 0 ? (
+                  <p className="text-xs text-slate-500">Fee-type split is unavailable for this invoice. You can still record payment manually.</p>
+                ) : (
+                  <div className="max-h-36 overflow-auto rounded-md border border-slate-200 bg-white">
+                    <table className="min-w-full border-collapse text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-100 bg-slate-50/80">
+                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
+                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Monthly Payable</th>
+                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Installment Payable</th>
+                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due Share</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {paymentFeeBreakdown.map((entry) => (
+                          <tr key={`payment-breakdown-${entry.feeType}`} className="border-b border-slate-100">
+                            <td className="px-3 py-2 text-slate-700">{entry.feeType}</td>
+                            <td className="px-3 py-2 text-slate-600">{formatCurrency(entry.monthlyPayable)}</td>
+                            <td className="px-3 py-2 text-slate-600">{formatCurrency(entry.installmentPayable)}</td>
+                            <td className="px-3 py-2 font-semibold text-brand-navy">{formatCurrency(entry.suggestedDueShare)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
               <div>
                 <p className="mb-1 text-xs text-slate-500">Payment Mode</p>
                 <select className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white" value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as 'UPI' | 'CASH')}>
@@ -1243,8 +1649,8 @@ export function FinancePage() {
 
               <div>
                 <p className="mb-1 text-xs text-slate-500">Fee Type</p>
-                <select className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white" value={paymentFeeType} onChange={(event) => setPaymentFeeType(event.target.value)}>
-                  {feeTypeOptions.map((option) => (
+                <select className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white" value={paymentFeeType} onChange={(event) => handlePaymentFeeTypeChange(event.target.value)}>
+                  {paymentFeeTypeOptions.map((option) => (
                     <option key={option} value={option}>
                       {option}
                     </option>

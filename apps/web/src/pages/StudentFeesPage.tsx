@@ -141,7 +141,16 @@ export function StudentFeesPage({ portalLabel }: StudentFeesPageProps) {
               </div>
             </div>
 
-            {fees.assignedFee.discount ? (
+            {fees.assignedFee.discounts && fees.assignedFee.discounts.length > 0 ? (
+              <div className="space-y-1 text-sm text-slate-600">
+                {fees.assignedFee.discounts.map((discount) => (
+                  <p key={discount.id}>
+                    Discount: {discount.type === 'FLAT' ? 'Flat' : 'Percentage'} ({discount.value})
+                    {discount.reason ? ` · ${discount.reason}` : ''}
+                  </p>
+                ))}
+              </div>
+            ) : fees.assignedFee.discount ? (
               <p className="text-sm text-slate-600">
                 Discount: {fees.assignedFee.discount.type === 'FLAT' ? 'Flat' : 'Percentage'} ({fees.assignedFee.discount.value})
                 {fees.assignedFee.discount.reason ? ` · ${fees.assignedFee.discount.reason}` : ''}
