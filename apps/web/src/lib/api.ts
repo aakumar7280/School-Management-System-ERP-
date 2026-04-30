@@ -192,6 +192,15 @@ export interface ClassAttendanceRecord {
   remark: string;
 }
 
+export interface ClassAttendanceDaySummary {
+  date: string;
+  presentCount: number;
+  absentCount: number;
+  markedCount: number;
+  totalStudents: number;
+  attendancePct: number;
+}
+
 export interface StudentAdmissionProfile {
   id: string;
   fullName: string;
@@ -353,10 +362,18 @@ export interface FinanceOverview {
     };
     student: {
       id: string;
-      admissionNo: string;
-      name: string;
-      className: string;
-      section: string;
+    };
+  }>;
+  periodInvoices: Array<{
+    id: string;
+    title: string;
+    dueDate: string;
+    amount: number;
+    paidAmount: number;
+    due: number;
+    status: string;
+    student: {
+      id: string;
     };
   }>;
   dueStudents: Array<{
@@ -374,6 +391,10 @@ export interface FinanceOverview {
       className: string;
       section: string;
     };
+  }>;
+  studentCredits: Array<{
+    studentId: string;
+    balance: number;
   }>;
   salariesSent: Array<{
     id: string;
@@ -733,6 +754,7 @@ export async function updateTeacher(
     firstName: string;
     lastName: string;
     email: string;
+    password?: string;
     assignedClass: string;
     assignedSection: string;
     subjects: string[];
@@ -888,6 +910,27 @@ export async function saveClassAttendance(payload: {
   if (!response.ok) {
     const data = await response.json().catch(() => ({ message: 'Failed to save class attendance' }));
     throw new Error(data.message ?? 'Failed to save class attendance');
+  }
+
+  return response.json();
+}
+
+export async function fetchClassAttendanceHistory(params: {
+  className: string;
+  section: string;
+}): Promise<ClassAttendanceDaySummary[]> {
+  const search = new URLSearchParams({
+    className: params.className,
+    section: params.section
+  });
+
+  const response = await fetch(`${API_BASE_URL}/attendance/class/history?${search.toString()}`, {
+    headers: getAuthHeader()
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({ message: 'Failed to load attendance history' }));
+    throw new Error(data.message ?? 'Failed to load attendance history');
   }
 
   return response.json();

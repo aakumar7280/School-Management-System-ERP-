@@ -14,6 +14,8 @@ type InvoiceRow = {
   paidAmount: unknown;
   dueDate: Date;
   status: string;
+  createdAt: Date;
+  updatedAt: Date;
   student: {
     id: string;
     admissionNo: string;
@@ -75,6 +77,11 @@ type FeePaymentRow = {
   };
 };
 
+type StudentFeeCreditRow = {
+  studentId: string;
+  balance: unknown;
+};
+
 type FinanceView = 'month' | 'year';
 
 function getMonthRange(month: string) {
@@ -122,7 +129,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
     const schoolId = req.auth!.schoolId;
     const { view, month, year, periodKey, start, end } = resolveFinancePeriod(req.query as Record<string, unknown>);
 
-    const [invoices, allUnpaidInvoices, payStubs, activeTeachers, feePayments, allFeePayments] = await Promise.all([
+    const [invoices, allUnpaidInvoices, payStubs, activeTeachers, feePayments, allFeePayments, studentFeeCredits] = await Promise.all([
       prisma.feeInvoice.findMany({
         where: {
           student: {
@@ -270,6 +277,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
           amount: true,
           paymentMethod: true,
           feeType: true,
+          dueAfterPayment: true,
           createdAt: true,
           invoice: {
             select: {
@@ -291,6 +299,17 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
               }
             }
           }
+        }
+      }),
+      prisma.studentFeeCredit.findMany({
+        where: {
+          student: {
+            schoolId
+          }
+        },
+        select: {
+          studentId: true,
+          balance: true
         }
       })
     ]);
@@ -416,42 +435,103 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
         { label: 'UPI', value: revenueByMethod.upi },
         { label: 'Cash', value: revenueByMethod.cash }
       ],
-      feeTransactions: (allFeePayments as FeePaymentRow[]).map((payment: FeePaymentRow) => {
-        const invoiceAmount = Number(payment.invoice.amount);
-        const invoicePaidAmount = Number(payment.invoice.paidAmount);
-        const snapshotDue = Number(payment.dueAfterPayment);
-        const computedDue = computedDueAfterByPaymentId.get(payment.id);
-        const invoiceDue = Number.isFinite(snapshotDue)
-          ? snapshotDue
-          : typeof computedDue === 'number'
-            ? computedDue
-            : Math.max(invoiceAmount - invoicePaidAmount, 0);
+      feeTransactions: (() => {
+        const mappedTransactions = (allFeePayments as FeePaymentRow[]).map((payment: FeePaymentRow) => {
+          const invoiceAmount = Number(payment.invoice.amount);
+          const invoicePaidAmount = Number(payment.invoice.paidAmount);
+          const snapshotDue = Number(payment.dueAfterPayment);
+          const computedDue = computedDueAfterByPaymentId.get(payment.id);
+          const invoiceDue = Number.isFinite(snapshotDue)
+            ? snapshotDue
+            : typeof computedDue === 'number'
+              ? computedDue
+              : Math.max(invoiceAmount - invoicePaidAmount, 0);
+
+          return {
+            id: payment.id,
+            createdAt: payment.createdAt.toISOString(),
+            amount: Number(payment.amount),
+            paymentMethod: payment.paymentMethod,
+            feeType: payment.feeType,
+            invoice: {
+              id: payment.invoice.id,
+              title: payment.invoice.title,
+              amount: invoiceAmount,
+              paidAmount: invoicePaidAmount,
+              due: invoiceDue,
+              dueDate: payment.invoice.dueDate.toISOString(),
+              status: payment.invoice.status
+            },
+            student: {
+              id: payment.invoice.student.id
+            }
+          };
+        });
+
+        const invoiceIdsWithTransactions = new Set((allFeePayments as FeePaymentRow[]).map((payment: FeePaymentRow) => payment.invoice.id));
+        const syntheticAdvanceAppliedTransactions = (invoices as InvoiceRow[])
+          .filter((invoice: InvoiceRow) => {
+            const invoicePaidAmount = Number(invoice.paidAmount);
+            return invoicePaidAmount > 0 && !invoiceIdsWithTransactions.has(invoice.id);
+          })
+          .map((invoice: InvoiceRow) => {
+            const invoiceAmount = Number(invoice.amount);
+            const invoicePaidAmount = Number(invoice.paidAmount);
+            const invoiceDue = Math.max(invoiceAmount - invoicePaidAmount, 0);
+
+            return {
+              id: `synthetic-advance-applied-${invoice.id}`,
+              createdAt: invoice.updatedAt.toISOString(),
+              amount: invoicePaidAmount,
+              paymentMethod: 'UPI' as const,
+              feeType: 'Advance Applied (Auto Deduction)',
+              invoice: {
+                id: invoice.id,
+                title: invoice.title,
+                amount: invoiceAmount,
+                paidAmount: invoicePaidAmount,
+                due: invoiceDue,
+                dueDate: invoice.dueDate.toISOString(),
+                status: invoice.status
+              },
+              student: {
+                id: invoice.student.id
+              }
+            };
+          });
+
+        return [...mappedTransactions, ...syntheticAdvanceAppliedTransactions].sort((left, right) => {
+          const timeDelta = new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+          if (timeDelta !== 0) {
+            return timeDelta;
+          }
+
+          return right.id.localeCompare(left.id);
+        });
+      })(),
+      periodInvoices: (invoices as InvoiceRow[]).map((invoice: InvoiceRow) => {
+        const amount = Number(invoice.amount);
+        const paidAmount = Number(invoice.paidAmount);
+        const due = Math.max(amount - paidAmount, 0);
 
         return {
-          id: payment.id,
-          createdAt: payment.createdAt.toISOString(),
-          amount: Number(payment.amount),
-          paymentMethod: payment.paymentMethod,
-          feeType: payment.feeType,
-          invoice: {
-            id: payment.invoice.id,
-            title: payment.invoice.title,
-            amount: invoiceAmount,
-            paidAmount: invoicePaidAmount,
-            due: invoiceDue,
-            dueDate: payment.invoice.dueDate.toISOString(),
-            status: payment.invoice.status
-          },
+          id: invoice.id,
+          title: invoice.title,
+          dueDate: invoice.dueDate.toISOString(),
+          amount,
+          paidAmount,
+          due,
+          status: invoice.status,
           student: {
-            id: payment.invoice.student.id,
-            admissionNo: payment.invoice.student.admissionNo,
-            name: `${payment.invoice.student.firstName} ${payment.invoice.student.lastName}`,
-            className: payment.invoice.student.className,
-            section: payment.invoice.student.section
+            id: invoice.student.id
           }
         };
       }),
       dueStudents,
+      studentCredits: (studentFeeCredits as StudentFeeCreditRow[]).map((credit: StudentFeeCreditRow) => ({
+        studentId: credit.studentId,
+        balance: Number(credit.balance)
+      })),
       salariesSent: (payStubs as PayStubRow[]).map((payStub: PayStubRow) => ({
         id: payStub.id,
         month: payStub.month,

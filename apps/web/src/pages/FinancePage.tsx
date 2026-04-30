@@ -102,6 +102,7 @@ export function FinancePage() {
   const [isInvoicePreviewOpen, setIsInvoicePreviewOpen] = useState(false);
   const [invoicePreviewSelectedComponentIds, setInvoicePreviewSelectedComponentIds] = useState<string[]>([]);
   const [invoicePreviewSelectedDiscountIds, setInvoicePreviewSelectedDiscountIds] = useState<string[]>([]);
+  const [invoiceDueThisMonth, setInvoiceDueThisMonth] = useState(true);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [activeAccordionPanel, setActiveAccordionPanel] = useState<AccordionPanelKey | null>('studentSelection');
   const [pinnedPanels, setPinnedPanels] = useState<PinnedPanelKey[]>(['summary']);
@@ -214,8 +215,15 @@ export function FinancePage() {
   const filteredTransactions = useMemo(() => {
     const allTransactions = overview?.feeTransactions ?? [];
     if (!selectedStudent) return [];
-    return allTransactions.filter((transaction) => transaction.student.admissionNo === selectedStudent.admissionNo);
+    return allTransactions.filter((transaction) => transaction.student.id === selectedStudent.id);
   }, [overview?.feeTransactions, selectedStudent]);
+
+  const selectedStudentAdvanceBalance = useMemo(() => {
+    if (!selectedStudent) return 0;
+    const credits = overview?.studentCredits ?? [];
+    const studentCredit = credits.find((credit) => credit.studentId === selectedStudent.id);
+    return Math.max(studentCredit?.balance ?? 0, 0);
+  }, [overview?.studentCredits, selectedStudent]);
 
   const activePaymentInvoice = useMemo(
     () => filteredDueStudents.find((invoice) => invoice.id === activePaymentInvoiceId) ?? null,
@@ -332,26 +340,202 @@ export function FinancePage() {
   }, [discounts, subtotal]);
 
   const finalTotal = useMemo(() => Math.max(subtotal - computedDiscountAmount, 0), [subtotal, computedDiscountAmount]);
-  const configuredInstallmentAmount = useMemo(() => {
-    if (billingCycle === 'MONTHLY') return finalTotal / 12;
-    if (billingCycle === 'QUARTERLY') return finalTotal / 4;
-    return finalTotal;
-  }, [billingCycle, finalTotal]);
 
-  const nextInstallmentPreviewAmount = useMemo(
-    () => Math.max(selectedSavedAssignment?.installmentAmount ?? configuredInstallmentAmount, 0),
-    [selectedSavedAssignment?.installmentAmount, configuredInstallmentAmount]
+  const previewSelectedCurrentMonthPayable = useMemo(() => {
+    if (!selectedSavedAssignment) {
+      return 0;
+    }
+
+    const installmentCount =
+      selectedSavedAssignment.billingCycle === 'MONTHLY'
+        ? 12
+        : selectedSavedAssignment.billingCycle === 'QUARTERLY'
+          ? 4
+          : 1;
+    const cycleMonthMultiplier =
+      selectedSavedAssignment.billingCycle === 'MONTHLY'
+        ? 1
+        : selectedSavedAssignment.billingCycle === 'QUARTERLY'
+          ? 3
+          : 12;
+
+    const components = selectedSavedAssignment.components
+      .map((component) => {
+        const baseAmount = Number(component.amount || 0);
+        const cyclePayable =
+          component.cadence === 'MONTHLY'
+            ? baseAmount * cycleMonthMultiplier
+            : component.cadence === 'YEARLY'
+              ? baseAmount / installmentCount
+              : baseAmount;
+
+        return {
+          id: component.id,
+          cadence: component.cadence,
+          cyclePayable
+        };
+      })
+      .filter((component) => Number.isFinite(component.cyclePayable) && component.cyclePayable > 0);
+
+    const defaultComponentIds = components.filter((component) => component.cadence !== 'ONCE').map((component) => component.id);
+    const fallbackComponentIds = components.map((component) => component.id);
+    const effectiveComponentIds =
+      invoicePreviewSelectedComponentIds.length > 0
+        ? invoicePreviewSelectedComponentIds
+        : defaultComponentIds.length > 0
+          ? defaultComponentIds
+          : fallbackComponentIds;
+
+    const componentSubtotal = components
+      .filter((component) => effectiveComponentIds.includes(component.id))
+      .reduce((sum, component) => sum + component.cyclePayable, 0);
+
+    const discounts =
+      selectedSavedAssignment.discounts && selectedSavedAssignment.discounts.length > 0
+        ? selectedSavedAssignment.discounts
+        : selectedSavedAssignment.discount
+          ? [selectedSavedAssignment.discount]
+          : [];
+    const effectiveDiscountIds =
+      invoicePreviewSelectedDiscountIds.length > 0
+        ? invoicePreviewSelectedDiscountIds
+        : discounts.map((discount) => discount.id);
+
+    const rawDiscount = discounts
+      .filter((discount) => effectiveDiscountIds.includes(discount.id))
+      .reduce((sum, discount) => {
+        const value = Number(discount.value || 0);
+        if (!Number.isFinite(value) || value <= 0) {
+          return sum;
+        }
+
+        if (discount.type === 'PERCENTAGE') {
+          return sum + (componentSubtotal * value) / 100;
+        }
+
+        return sum + value;
+      }, 0);
+
+    const discountAmount = Math.min(Math.max(rawDiscount, 0), componentSubtotal);
+    return Math.max(componentSubtotal - discountAmount, 0);
+  }, [invoicePreviewSelectedComponentIds, invoicePreviewSelectedDiscountIds, selectedSavedAssignment]);
+
+  const hasCurrentMonthPaymentActivity = useMemo(
+    () =>
+      filteredTransactions.some((transaction) => {
+        const dueDate = new Date(transaction.invoice.dueDate);
+        return dueDate >= selectedMonthWindow.start && dueDate < selectedMonthWindow.end;
+      }),
+    [filteredTransactions, selectedMonthWindow.end, selectedMonthWindow.start]
   );
 
-  const effectiveNextMonthDue = useMemo(
-    () => (nextMonthDueTotal > 0 ? nextMonthDueTotal : nextInstallmentPreviewAmount),
-    [nextMonthDueTotal, nextInstallmentPreviewAmount]
+  const selectedStudentCurrentMonthInvoices = useMemo(() => {
+    if (!selectedStudent) {
+      return [];
+    }
+
+    const periodInvoices = overview?.periodInvoices ?? [];
+    return periodInvoices.filter((invoice) => {
+      if (invoice.student.id !== selectedStudent.id) {
+        return false;
+      }
+
+      const dueDate = new Date(invoice.dueDate);
+      return dueDate >= selectedMonthWindow.start && dueDate < selectedMonthWindow.end;
+    });
+  }, [overview?.periodInvoices, selectedMonthWindow.end, selectedMonthWindow.start, selectedStudent]);
+
+  const currentMonthDueFromGeneratedInvoices = useMemo(
+    () => selectedStudentCurrentMonthInvoices.reduce((sum, invoice) => sum + invoice.due, 0),
+    [selectedStudentCurrentMonthInvoices]
   );
 
-  const projectedNextMonthPayable = useMemo(
-    () => carryForwardDueTotal + effectiveNextMonthDue,
-    [carryForwardDueTotal, effectiveNextMonthDue]
+  const hasCurrentMonthInvoiceRecord = selectedStudentCurrentMonthInvoices.length > 0;
+
+  const expectedCurrentMonthDue = useMemo(() => {
+    if (hasCurrentMonthInvoiceRecord) {
+      return currentMonthDueFromGeneratedInvoices;
+    }
+
+    if (hasCurrentMonthPaymentActivity) {
+      return 0;
+    }
+
+    return previewSelectedCurrentMonthPayable;
+  }, [
+    currentMonthDueFromGeneratedInvoices,
+    hasCurrentMonthInvoiceRecord,
+    hasCurrentMonthPaymentActivity,
+    previewSelectedCurrentMonthPayable
+  ]);
+
+  const grossDueNow = useMemo(() => carryForwardDueTotal + expectedCurrentMonthDue, [carryForwardDueTotal, expectedCurrentMonthDue]);
+
+  const projectedAdvanceAppliedToDue = useMemo(
+    () => Math.min(selectedStudentAdvanceBalance, grossDueNow),
+    [grossDueNow, selectedStudentAdvanceBalance]
   );
+
+  const netDueNow = useMemo(() => Math.max(grossDueNow - projectedAdvanceAppliedToDue, 0), [projectedAdvanceAppliedToDue, grossDueNow]);
+
+  const paidThisMonthTotal = useMemo(
+    () =>
+      filteredTransactions
+        .filter((transaction) => {
+          const transactionDate = new Date(transaction.createdAt);
+          if (transactionDate < selectedMonthWindow.start || transactionDate >= selectedMonthWindow.end) {
+            return false;
+          }
+
+          const feeType = (transaction.feeType ?? '').toLowerCase();
+          const isAutoDeduction = feeType.includes('advance applied') || feeType.includes('auto deduction');
+          return !isAutoDeduction;
+        })
+        .reduce((sum, transaction) => sum + transaction.amount, 0),
+    [filteredTransactions, selectedMonthWindow.end, selectedMonthWindow.start]
+  );
+
+  const advanceAppliedThisMonth = useMemo(
+    () =>
+      filteredTransactions
+        .filter((transaction) => {
+          const transactionDate = new Date(transaction.createdAt);
+          if (transactionDate < selectedMonthWindow.start || transactionDate >= selectedMonthWindow.end) {
+            return false;
+          }
+
+          const feeType = (transaction.feeType ?? '').toLowerCase();
+          return feeType.includes('advance') && !feeType.includes('credit');
+        })
+        .reduce((sum, transaction) => sum + transaction.amount, 0),
+    [filteredTransactions, selectedMonthWindow.end, selectedMonthWindow.start]
+  );
+
+  const dueBeforeAdvanceThisMonth = useMemo(
+    () => netDueNow + advanceAppliedThisMonth,
+    [advanceAppliedThisMonth, netDueNow]
+  );
+
+  const hasAdvanceHistory = useMemo(
+    () =>
+      selectedStudentAdvanceBalance > 0 ||
+      filteredTransactions.some((transaction) => (transaction.feeType ?? '').toLowerCase().includes('advance')),
+    [filteredTransactions, selectedStudentAdvanceBalance]
+  );
+
+  const currentMonthDueModeLabel = useMemo(() => {
+    if (hasCurrentMonthInvoiceRecord) {
+      return currentMonthDueFromGeneratedInvoices > 0
+        ? 'From generated current-month invoices'
+        : 'Current-month invoice already settled';
+    }
+
+    if (hasCurrentMonthPaymentActivity) {
+      return 'Current-month invoice already settled';
+    }
+
+    return 'Projected from invoice preview selection';
+  }, [currentMonthDueFromGeneratedInvoices, hasCurrentMonthInvoiceRecord, hasCurrentMonthPaymentActivity]);
 
   const invoicePreviewInstallmentLabel = useMemo(() => {
     if (!selectedSavedAssignment) return 'Monthly';
@@ -436,9 +620,34 @@ export function FinancePage() {
       .filter((discount) => Number.isFinite(discount.value) && discount.value > 0);
   }, [selectedSavedAssignment]);
 
+  const defaultInvoicePreviewComponentIds = useMemo(
+    () =>
+      invoicePreviewComponents
+        .filter((component) => component.cyclePayable > 0 && component.cadence !== 'ONCE')
+        .map((component) => component.id),
+    [invoicePreviewComponents]
+  );
+
+  const fallbackInvoicePreviewComponentIds = useMemo(
+    () => invoicePreviewComponents.filter((component) => component.cyclePayable > 0).map((component) => component.id),
+    [invoicePreviewComponents]
+  );
+
+  const effectiveInvoicePreviewComponentIds =
+    invoicePreviewSelectedComponentIds.length > 0
+      ? invoicePreviewSelectedComponentIds
+      : defaultInvoicePreviewComponentIds.length > 0
+        ? defaultInvoicePreviewComponentIds
+        : fallbackInvoicePreviewComponentIds;
+
+  const effectiveInvoicePreviewDiscountIds =
+    invoicePreviewSelectedDiscountIds.length > 0
+      ? invoicePreviewSelectedDiscountIds
+      : invoicePreviewDiscounts.map((discount) => discount.id);
+
   const selectedInvoiceComponents = useMemo(
-    () => invoicePreviewComponents.filter((component) => invoicePreviewSelectedComponentIds.includes(component.id)),
-    [invoicePreviewComponents, invoicePreviewSelectedComponentIds]
+    () => invoicePreviewComponents.filter((component) => effectiveInvoicePreviewComponentIds.includes(component.id)),
+    [effectiveInvoicePreviewComponentIds, invoicePreviewComponents]
   );
 
   const selectedInvoiceComponentSubtotal = useMemo(
@@ -447,8 +656,8 @@ export function FinancePage() {
   );
 
   const selectedInvoiceDiscounts = useMemo(
-    () => invoicePreviewDiscounts.filter((discount) => invoicePreviewSelectedDiscountIds.includes(discount.id)),
-    [invoicePreviewDiscounts, invoicePreviewSelectedDiscountIds]
+    () => invoicePreviewDiscounts.filter((discount) => effectiveInvoicePreviewDiscountIds.includes(discount.id)),
+    [effectiveInvoicePreviewDiscountIds, invoicePreviewDiscounts]
   );
 
   const selectedInvoiceDiscountAmount = useMemo(() => {
@@ -466,6 +675,28 @@ export function FinancePage() {
     () => Math.max(selectedInvoiceComponentSubtotal - selectedInvoiceDiscountAmount, 0),
     [selectedInvoiceComponentSubtotal, selectedInvoiceDiscountAmount]
   );
+
+  const selectedMonthInvoicePayable = useMemo(
+    () => Math.max(selectedInvoiceNetAmount, 0),
+    [selectedInvoiceNetAmount]
+  );
+
+  const effectiveNextMonthDue = useMemo(
+    () => (nextMonthDueTotal > 0 ? nextMonthDueTotal : selectedMonthInvoicePayable),
+    [nextMonthDueTotal, selectedMonthInvoicePayable]
+  );
+
+  const projectedNextMonthPayable = useMemo(
+    () => carryForwardDueTotal + effectiveNextMonthDue,
+    [carryForwardDueTotal, effectiveNextMonthDue]
+  );
+
+  const previewInvoiceDueDate = useMemo(() => {
+    const baseDate = invoiceDueThisMonth ? selectedMonthWindow.start : nextMonthWindow.start;
+    const year = baseDate.getFullYear();
+    const monthPart = String(baseDate.getMonth() + 1).padStart(2, '0');
+    return `${year}-${monthPart}-01`;
+  }, [invoiceDueThisMonth, nextMonthWindow.start, selectedMonthWindow.start]);
 
   function togglePinnedPanel(panel: PinnedPanelKey) {
     setPinnedPanels((previous) => (previous.includes(panel) ? previous.filter((item) => item !== panel) : [...previous, panel]));
@@ -695,6 +926,7 @@ export function FinancePage() {
           ? [selectedSavedAssignment.discount.id]
           : [];
 
+    setInvoiceDueThisMonth(true);
     setInvoicePreviewSelectedComponentIds(defaultSelectedComponents.length > 0 ? defaultSelectedComponents : selectableComponents);
     setInvoicePreviewSelectedDiscountIds(selectableDiscounts);
     setAssignmentError(null);
@@ -759,7 +991,8 @@ export function FinancePage() {
       await createFeeInvoice({
         admissionNo: selectedStudent.admissionNo,
         title: fallbackTitle,
-        amount: selectedInvoiceNetAmount
+        amount: selectedInvoiceNetAmount,
+        dueDate: previewInvoiceDueDate
       });
       await loadFinanceData(month);
       setAssignmentMessage('Fee invoice generated successfully.');
@@ -924,7 +1157,7 @@ export function FinancePage() {
 
     try {
       await payFeeInvoiceAsAdmin(invoice.id, {
-        amount: Math.min(typedAmount, invoice.due),
+        amount: typedAmount,
         paymentMethod,
         feeType: paymentFeeType
       });
@@ -960,7 +1193,10 @@ export function FinancePage() {
         amount: typedAmount,
         paymentMethod,
         feeType: paymentFeeType,
-        sourceInvoiceId: activePaymentInvoiceId ?? undefined
+        sourceInvoiceId:
+          typeof activePaymentInvoiceId === 'string' && activePaymentInvoiceId.trim().length > 0
+            ? activePaymentInvoiceId
+            : undefined
       });
 
       await loadFinanceData(month);
@@ -1161,6 +1397,54 @@ export function FinancePage() {
 
       <FinanceSectionNav />
 
+      <section className="rounded-2xl border border-brand-sky/40 bg-gradient-to-r from-brand-sky/10 via-white to-brand-orange/10 p-5 shadow-card">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Quick Due Snapshot</p>
+            <h3 className="mt-1 text-xl font-bold text-brand-navy">
+              {selectedStudent
+                ? `${selectedStudent.firstName} ${selectedStudent.lastName} - ${month}`
+                : `Select a student to see due for ${month}`}
+            </h3>
+            <p className="mt-1 text-sm text-slate-600">
+              One-line view after discounts and advance adjustment so you do not need to open multiple subtabs.
+            </p>
+          </div>
+          <div className="rounded-xl border border-brand-navy/20 bg-white px-5 py-4 text-right">
+            <p className="text-xs uppercase tracking-wider text-slate-500">Net Due Now</p>
+            <p className="mt-1 text-3xl font-bold text-brand-navy">{formatCurrency(selectedStudent ? netDueNow : 0)}</p>
+            <p className="mt-1 text-xs text-slate-500">{selectedStudent ? currentMonthDueModeLabel : 'Waiting for student selection'}</p>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-2 text-sm md:grid-cols-4">
+          <div className="rounded-lg border border-slate-200/80 bg-white px-3 py-2">
+            <p className="text-xs text-slate-500">Carry Forward Due</p>
+            <p className="font-semibold text-brand-navy">{formatCurrency(selectedStudent ? carryForwardDueTotal : 0)}</p>
+          </div>
+          <div className="rounded-lg border border-slate-200/80 bg-white px-3 py-2">
+            <p className="text-xs text-slate-500">Advance Balance</p>
+            <p className="font-semibold text-brand-navy">{formatCurrency(selectedStudent ? selectedStudentAdvanceBalance : 0)}</p>
+          </div>
+          <div className="rounded-lg border border-slate-200/80 bg-white px-3 py-2">
+            <p className="text-xs text-slate-500">Paid This Month</p>
+            <p className="font-semibold text-brand-navy">{formatCurrency(selectedStudent ? paidThisMonthTotal : 0)}</p>
+          </div>
+          {selectedStudent && hasAdvanceHistory ? (
+            <div className="rounded-lg border border-slate-200/80 bg-white px-3 py-2">
+              <p className="text-xs text-slate-500">Advance Applied</p>
+              <p className="font-semibold text-brand-navy">- {formatCurrency(advanceAppliedThisMonth)}</p>
+            </div>
+          ) : null}
+          {selectedStudent && hasAdvanceHistory ? (
+            <div className="rounded-lg border border-slate-200/80 bg-white px-3 py-2">
+              <p className="text-xs text-slate-500">Due Before Advance</p>
+              <p className="font-semibold text-brand-navy">{formatCurrency(dueBeforeAdvanceThisMonth)}</p>
+            </div>
+          ) : null}
+        </div>
+      </section>
+
       <section className="rounded-xl border border-slate-200/80 shadow-card bg-white p-4">
         <div className="flex flex-wrap items-center justify-end gap-2">
           <input className="rounded-md border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white" type="month" value={month} onChange={(event) => setMonth(event.target.value)} />
@@ -1324,7 +1608,7 @@ export function FinancePage() {
                   <option value="QUARTERLY">Quarterly</option>
                   <option value="YEARLY">Yearly</option>
                 </select>
-                <div className="rounded-md border border-brand-orange/40 bg-brand-orange/5 px-3 py-2 text-sm">Current {billingCycle} Due: <span className="font-semibold text-brand-navy">{formatCurrency(configuredInstallmentAmount)}</span></div>
+                <div className="rounded-md border border-brand-orange/40 bg-brand-orange/5 px-3 py-2 text-sm">Selected Month Invoice Payable: <span className="font-semibold text-brand-navy">{formatCurrency(selectedMonthInvoicePayable)}</span></div>
               </div>
 
               <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
@@ -1561,7 +1845,11 @@ export function FinancePage() {
                 <tr key={transaction.id} className="border-b border-slate-100 table-row-hover">
                   <td className="px-4 py-3">{new Date(transaction.createdAt).toLocaleString()}</td>
                   <td className="px-4 py-3">{transaction.invoice.title}</td>
-                  <td className="px-4 py-3">{transaction.feeType ?? 'General'}</td>
+                  <td className="px-4 py-3">
+                    {(transaction.feeType ?? '').toLowerCase().includes('advance applied')
+                      ? 'Advance Deducted From Balance'
+                      : transaction.feeType ?? 'General'}
+                  </td>
                   <td className="px-4 py-3">{transaction.paymentMethod}</td>
                   <td className="px-4 py-3 font-semibold text-brand-navy">{formatCurrency(transaction.amount)}</td>
                   <td className="px-4 py-3">{formatCurrency(transaction.invoice.due)}</td>
@@ -1589,6 +1877,9 @@ export function FinancePage() {
           <section className="rounded-xl border border-slate-200/80 shadow-card bg-white p-4">
             <h4 className="font-semibold text-brand-navy">Payments</h4>
             <p className="mt-1 text-xs text-slate-500">Record fee collection in popup form.</p>
+            <div className="mt-2 rounded-md border border-brand-sky/30 bg-brand-sky/10 px-3 py-2 text-xs text-brand-navy">
+              Advance Balance: <span className="font-semibold">{formatCurrency(selectedStudentAdvanceBalance)}</span>
+            </div>
             <button
               type="button"
               onClick={handleOpenPrimaryPaymentModal}
@@ -1687,7 +1978,25 @@ export function FinancePage() {
                   Selected Invoice Amount: <span className="font-semibold text-brand-navy">{formatCurrency(selectedInvoiceNetAmount)}</span>
                 </p>
               </div>
-              <p className="mt-3 text-xs text-slate-500">Due date will be auto-calculated using school due-day settings at generation time.</p>
+              <div className="mt-3 rounded-md border border-slate-200/80 bg-white px-3 py-2 text-xs text-slate-600">
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={invoiceDueThisMonth}
+                    onChange={(event) => setInvoiceDueThisMonth(event.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-brand-navy focus:ring-brand-sky"
+                  />
+                  <span>
+                    This month ({month})
+                  </span>
+                </label>
+                <p className="mt-1 text-slate-500">
+                  {invoiceDueThisMonth
+                    ? `Checked: invoice due date will be set in ${month}.`
+                    : `Unchecked: invoice due date will be set in ${nextMonthLabel}.`}
+                </p>
+                <p className="mt-1 text-slate-500">Selected due date: <span className="font-semibold text-brand-navy">{previewInvoiceDueDate}</span></p>
+              </div>
             </div>
 
             <div className="mt-4 rounded-lg border border-slate-200/80 bg-white">
@@ -1794,8 +2103,8 @@ export function FinancePage() {
                 <span className="text-base font-bold text-brand-navy">{formatCurrency(selectedInvoiceNetAmount)}</span>
               </div>
               <div className="mt-2 flex items-center justify-between">
-                <span className="text-slate-600">Net Monthly Payable</span>
-                <span className="font-semibold text-brand-navy">{formatCurrency(selectedSavedAssignment.finalTotal / 12)}</span>
+                <span className="text-slate-600">Net Payable For This Invoice</span>
+                <span className="font-semibold text-brand-navy">{formatCurrency(selectedInvoiceNetAmount)}</span>
               </div>
             </div>
 
@@ -1831,6 +2140,11 @@ export function FinancePage() {
                     ? 'Advance amount will settle selected and pending dues first. Remaining balance carries forward automatically.'
                     : 'Select payment details and submit.'}
                 </p>
+                {paymentModalMode === 'advance' ? (
+                  <p className="mt-1 text-xs text-brand-navy">
+                    Current Advance Balance: <span className="font-semibold">{formatCurrency(selectedStudentAdvanceBalance)}</span>
+                  </p>
+                ) : null}
               </div>
               <button
                 type="button"
@@ -1867,7 +2181,7 @@ export function FinancePage() {
                 {paymentModalMode === 'advance' ? (
                   <p className="text-xs text-slate-500">Advance payment settles pending dues in sequence and carries extra balance forward as student credit.</p>
                 ) : paymentFeeBreakdown.length === 0 ? (
-                  <p className="text-xs text-slate-500">Fee-type split is unavailable for this invoice. You can still record payment manually.</p>
+                  <p className="text-xs text-slate-500">Fee-type split is unavailable for this invoice. You can still record payment manually. Any amount above due is moved to advance balance.</p>
                 ) : (
                   <div className="max-h-36 overflow-auto rounded-md border border-slate-200 bg-white">
                     <table className="min-w-full border-collapse text-left text-xs">

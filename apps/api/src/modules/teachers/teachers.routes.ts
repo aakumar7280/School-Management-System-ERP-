@@ -49,6 +49,7 @@ const updateTeacherSchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   email: z.string().email(),
+  password: z.string().min(6).optional(),
   assignedClass: z.string().min(1),
   assignedSection: z.string().min(1),
   subjects: z.array(z.string().min(1)).min(1),
@@ -212,6 +213,9 @@ teachersRouter.patch('/teachers/:id', async (req: AuthenticatedRequest, res) => 
       return res.status(400).json({ message: validation.message });
     }
 
+    const normalizedPassword = payload.password?.trim();
+    const passwordHash = normalizedPassword ? await bcrypt.hash(normalizedPassword, 10) : undefined;
+
     const updated = await prisma.user.update({
       where: { id: req.params.id },
       data: {
@@ -219,6 +223,7 @@ teachersRouter.patch('/teachers/:id', async (req: AuthenticatedRequest, res) => 
         firstName: payload.firstName,
         lastName: payload.lastName,
         email: payload.email,
+        ...(passwordHash ? { passwordHash } : {}),
         assignedClass: payload.assignedClass,
         assignedSection: payload.assignedSection,
         subjects: payload.subjects,

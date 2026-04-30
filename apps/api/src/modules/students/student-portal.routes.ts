@@ -483,44 +483,94 @@ studentPortalRouter.post('/student-portal/fees/:invoiceId/pay', requireStudentOr
       return res.status(400).json({ message: 'Invoice is already fully paid.' });
     }
 
-    const payAmount = payload.amount ? Math.min(payload.amount, due) : due;
+    const requestedAmount = payload.amount ? Number(payload.amount) : due;
+    const payAmount = Math.min(requestedAmount, due);
+    const overpaidAmount = Math.max(requestedAmount - due, 0);
 
-    if (payAmount <= 0) {
+    if (payAmount <= 0 && overpaidAmount <= 0) {
       return res.status(400).json({ message: 'Payment amount must be greater than zero.' });
     }
 
     const nextPaidAmount = alreadyPaid + payAmount;
     const nextDue = Math.max(amount - nextPaidAmount, 0);
 
-    await prisma.feePayment.create({
-      data: {
-        invoiceId: invoice.id,
-        amount: payAmount,
-        paymentMethod: payload.paymentMethod ?? 'UPI',
-        feeType: payload.feeType,
-        dueAfterPayment: nextDue
-      }
-    });
+    const result = await prisma.$transaction(async (tx: any) => {
+      await tx.feePayment.create({
+        data: {
+          invoiceId: invoice.id,
+          amount: payAmount,
+          paymentMethod: payload.paymentMethod ?? 'UPI',
+          feeType: payload.feeType,
+          dueAfterPayment: nextDue
+        }
+      });
 
-    const updated = await prisma.feeInvoice.update({
-      where: { id: invoice.id },
-      data: {
-        paidAmount: nextPaidAmount,
-        status: nextDue <= 0 ? 'PAID' : 'PARTIAL'
+      const updatedInvoice = await tx.feeInvoice.update({
+        where: { id: invoice.id },
+        data: {
+          paidAmount: nextPaidAmount,
+          status: nextDue <= 0 ? 'PAID' : 'PARTIAL'
+        }
+      });
+
+      if (overpaidAmount > 0) {
+        const creditFeeType = payload.feeType?.trim() ? `${payload.feeType.trim()} (Advance Credit)` : 'Advance Credit';
+
+        await tx.feePayment.create({
+          data: {
+            invoiceId: invoice.id,
+            amount: overpaidAmount,
+            paymentMethod: payload.paymentMethod ?? 'UPI',
+            feeType: creditFeeType,
+            dueAfterPayment: nextDue
+          }
+        });
+
+        await tx.studentFeeCredit.upsert({
+          where: { studentId: access.studentId },
+          update: {
+            balance: {
+              increment: overpaidAmount
+            }
+          },
+          create: {
+            studentId: access.studentId,
+            balance: overpaidAmount
+          }
+        });
       }
+
+      const credit = await tx.studentFeeCredit.findUnique({
+        where: { studentId: access.studentId },
+        select: { balance: true }
+      });
+
+      return {
+        updatedInvoice,
+        creditBalance: Number(credit?.balance ?? 0)
+      };
     });
 
     return res.json({
-      message: nextDue <= 0 ? 'Fee paid successfully.' : 'Partial fee payment recorded successfully.',
+      message:
+        overpaidAmount > 0
+          ? `Fee paid successfully. ${overpaidAmount.toFixed(2)} added to advance balance.`
+          : nextDue <= 0
+            ? 'Fee paid successfully.'
+            : 'Partial fee payment recorded successfully.',
       invoice: {
-        id: updated.id,
-        title: updated.title,
-        amount: Number(updated.amount),
-        paidAmount: Number(updated.paidAmount),
-        due: Math.max(Number(updated.amount) - Number(updated.paidAmount), 0),
-        dueDate: updated.dueDate,
-        status: updated.status,
-        updatedAt: updated.updatedAt
+        id: result.updatedInvoice.id,
+        title: result.updatedInvoice.title,
+        amount: Number(result.updatedInvoice.amount),
+        paidAmount: Number(result.updatedInvoice.paidAmount),
+        due: Math.max(Number(result.updatedInvoice.amount) - Number(result.updatedInvoice.paidAmount), 0),
+        dueDate: result.updatedInvoice.dueDate,
+        status: result.updatedInvoice.status,
+        updatedAt: result.updatedInvoice.updatedAt
+      },
+      overpayment: {
+        creditedAmount: overpaidAmount,
+        advanceBalance: result.creditBalance
       }
     });
   } catch (error) {

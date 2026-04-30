@@ -158,6 +158,44 @@ function getNextDueDate(feeDueDayOfMonth: number, from: Date = new Date()) {
   return new Date(nextMonthYear, nextMonth, nextMonthDueDay, 12, 0, 0, 0);
 }
 
+async function ensureAdvanceCreditLedgerInvoice(tx: any, studentId: string) {
+  const existingLedger = await tx.feeInvoice.findFirst({
+    where: {
+      studentId,
+      title: 'Advance Credit Ledger'
+    },
+    orderBy: {
+      createdAt: 'desc'
+    },
+    select: {
+      id: true
+    }
+  });
+
+  if (existingLedger) {
+    return existingLedger.id;
+  }
+
+  const dueDate = new Date();
+  dueDate.setHours(12, 0, 0, 0);
+
+  const createdLedger = await tx.feeInvoice.create({
+    data: {
+      studentId,
+      title: 'Advance Credit Ledger',
+      amount: 0,
+      paidAmount: 0,
+      dueDate,
+      status: 'PAID'
+    },
+    select: {
+      id: true
+    }
+  });
+
+  return createdLedger.id;
+}
+
 function toCsvCell(value: unknown) {
   const text = String(value ?? '');
   if (text.includes(',') || text.includes('"') || text.includes('\n')) {
@@ -749,6 +787,18 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
         }
       });
 
+      if (paidAmount > 0) {
+        await tx.feePayment.create({
+          data: {
+            invoiceId: createdInvoice.id,
+            amount: paidAmount,
+            paymentMethod: 'UPI',
+            feeType: 'Advance Applied (Auto Deduction)',
+            dueAfterPayment: Math.max(invoiceAmount - paidAmount, 0)
+          }
+        });
+      }
+
       return {
         invoice: createdInvoice,
         creditApplied: paidAmount
@@ -880,7 +930,7 @@ feesRouter.post('/fees/invoices/bulk', async (req: AuthenticatedRequest, res) =>
         const paidAmount = Math.max(appliedAmount, 0);
         const status = resolveInvoiceStatus(installmentAmount, paidAmount);
 
-        await tx.feeInvoice.create({
+        const createdInvoice = await tx.feeInvoice.create({
           data: {
             studentId: assignment.studentId,
             title: `${assignment.billingCycle} Fee Invoice`,
@@ -890,6 +940,18 @@ feesRouter.post('/fees/invoices/bulk', async (req: AuthenticatedRequest, res) =>
             status
           }
         });
+
+        if (paidAmount > 0) {
+          await tx.feePayment.create({
+            data: {
+              invoiceId: createdInvoice.id,
+              amount: paidAmount,
+              paymentMethod: 'UPI',
+              feeType: 'Advance Applied (Auto Deduction)',
+              dueAfterPayment: Math.max(installmentAmount - paidAmount, 0)
+            }
+          });
+        }
       });
 
       created += 1;
@@ -936,43 +998,94 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
       return res.status(400).json({ message: 'Invoice is already fully paid.' });
     }
 
-    const payAmount = Math.min(payload.amount, due);
-    if (payAmount <= 0) {
+    const requestedAmount = Number(payload.amount);
+    const payAmount = Math.min(requestedAmount, due);
+    const overpaidAmount = Math.max(requestedAmount - due, 0);
+
+    if (payAmount <= 0 && overpaidAmount <= 0) {
       return res.status(400).json({ message: 'Payment amount must be greater than zero.' });
     }
 
     const nextPaidAmount = alreadyPaid + payAmount;
     const nextDue = Math.max(amount - nextPaidAmount, 0);
 
-    await prisma.feePayment.create({
-      data: {
-        invoiceId: invoice.id,
-        amount: payAmount,
-        paymentMethod: payload.paymentMethod,
-        feeType: payload.feeType,
-        dueAfterPayment: nextDue
-      }
-    });
+    const result = await prisma.$transaction(async (tx: any) => {
+      await tx.feePayment.create({
+        data: {
+          invoiceId: invoice.id,
+          amount: payAmount,
+          paymentMethod: payload.paymentMethod,
+          feeType: payload.feeType,
+          dueAfterPayment: nextDue
+        }
+      });
 
-    const updated = await prisma.feeInvoice.update({
-      where: { id: invoice.id },
-      data: {
-        paidAmount: nextPaidAmount,
-        status: nextDue <= 0 ? 'PAID' : 'PARTIAL'
+      const updatedInvoice = await tx.feeInvoice.update({
+        where: { id: invoice.id },
+        data: {
+          paidAmount: nextPaidAmount,
+          status: nextDue <= 0 ? 'PAID' : 'PARTIAL'
+        }
+      });
+
+      if (overpaidAmount > 0) {
+        const creditFeeType = payload.feeType?.trim() ? `${payload.feeType.trim()} (Advance Credit)` : 'Advance Credit';
+
+        await tx.feePayment.create({
+          data: {
+            invoiceId: invoice.id,
+            amount: overpaidAmount,
+            paymentMethod: payload.paymentMethod,
+            feeType: creditFeeType,
+            dueAfterPayment: nextDue
+          }
+        });
+
+        await tx.studentFeeCredit.upsert({
+          where: { studentId: invoice.studentId },
+          update: {
+            balance: {
+              increment: overpaidAmount
+            }
+          },
+          create: {
+            studentId: invoice.studentId,
+            balance: overpaidAmount
+          }
+        });
       }
+
+      const credit = await tx.studentFeeCredit.findUnique({
+        where: { studentId: invoice.studentId },
+        select: { balance: true }
+      });
+
+      return {
+        updatedInvoice,
+        creditBalance: Number(credit?.balance ?? 0)
+      };
     });
 
     return res.json({
-      message: nextDue <= 0 ? 'Fee payment recorded and invoice closed.' : 'Partial fee payment recorded successfully.',
+      message:
+        overpaidAmount > 0
+          ? `Fee payment recorded. ${overpaidAmount.toFixed(2)} added to advance balance.`
+          : nextDue <= 0
+            ? 'Fee payment recorded and invoice closed.'
+            : 'Partial fee payment recorded successfully.',
       invoice: {
-        id: updated.id,
-        title: updated.title,
-        amount: Number(updated.amount),
-        paidAmount: Number(updated.paidAmount),
-        due: Math.max(Number(updated.amount) - Number(updated.paidAmount), 0),
-        dueDate: updated.dueDate,
-        status: updated.status,
-        updatedAt: updated.updatedAt
+        id: result.updatedInvoice.id,
+        title: result.updatedInvoice.title,
+        amount: Number(result.updatedInvoice.amount),
+        paidAmount: Number(result.updatedInvoice.paidAmount),
+        due: Math.max(Number(result.updatedInvoice.amount) - Number(result.updatedInvoice.paidAmount), 0),
+        dueDate: result.updatedInvoice.dueDate,
+        status: result.updatedInvoice.status,
+        updatedAt: result.updatedInvoice.updatedAt
+      },
+      overpayment: {
+        creditedAmount: overpaidAmount,
+        advanceBalance: result.creditBalance
       }
     });
   } catch (error) {
@@ -1062,7 +1175,7 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
             invoiceId: invoice.id,
             amount: payAmount,
             paymentMethod: payload.paymentMethod,
-            feeType: payload.feeType?.trim() || 'Advance Payment',
+            feeType: payload.feeType?.trim() ? `${payload.feeType.trim()} (Advance Applied)` : 'Advance Applied',
             dueAfterPayment: nextDue
           }
         });
@@ -1080,6 +1193,33 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
       }
 
       if (remainingAmount > 0) {
+        const creditFeeType = payload.feeType?.trim() ? `${payload.feeType.trim()} (Advance Credit)` : 'Advance Credit';
+
+        let advanceLogInvoiceId: string;
+        if (payload.sourceInvoiceId) {
+          advanceLogInvoiceId = payload.sourceInvoiceId;
+        } else if (orderedInvoices.length > 0) {
+          advanceLogInvoiceId = orderedInvoices[0].id;
+        } else {
+          const latestInvoice = await tx.feeInvoice.findFirst({
+            where: { studentId: student.id },
+            orderBy: [{ dueDate: 'desc' }, { createdAt: 'desc' }],
+            select: { id: true }
+          });
+
+          advanceLogInvoiceId = latestInvoice?.id ?? (await ensureAdvanceCreditLedgerInvoice(tx, student.id));
+        }
+
+        await tx.feePayment.create({
+          data: {
+            invoiceId: advanceLogInvoiceId,
+            amount: remainingAmount,
+            paymentMethod: payload.paymentMethod,
+            feeType: creditFeeType,
+            dueAfterPayment: 0
+          }
+        });
+
         await tx.studentFeeCredit.upsert({
           where: { studentId: student.id },
           update: {

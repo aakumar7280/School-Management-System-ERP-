@@ -26,6 +26,7 @@ export function StaffManagementPage() {
 
   const [editForm, setEditForm] = useState({
     loginId: '',
+    password: '',
     firstName: '',
     lastName: '',
     email: '',
@@ -34,6 +35,8 @@ export function StaffManagementPage() {
     subjects: ''
   });
   const [updating, setUpdating] = useState(false);
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
+  const [showEditPassword, setShowEditPassword] = useState(false);
 
   async function loadTeachers() {
     setLoading(true);
@@ -93,6 +96,7 @@ export function StaffManagementPage() {
     setSelectedTeacher(teacher);
     setEditForm({
       loginId: teacher.loginId,
+      password: '',
       firstName: teacher.firstName,
       lastName: teacher.lastName,
       email: teacher.email,
@@ -113,12 +117,19 @@ export function StaffManagementPage() {
 
     try {
       await updateTeacher(selectedTeacher.id, {
-        ...editForm,
+        loginId: editForm.loginId.trim(),
+        firstName: editForm.firstName,
+        lastName: editForm.lastName,
+        email: editForm.email.trim().toLowerCase(),
+        password: editForm.password.trim() ? editForm.password.trim() : undefined,
+        assignedClass: editForm.assignedClass,
+        assignedSection: editForm.assignedSection,
         subjects: editForm.subjects
           .split(',')
           .map((subject) => subject.trim())
           .filter(Boolean)
       });
+      setEditForm((prev) => ({ ...prev, password: '' }));
       setMessage('Teacher details updated.');
       await loadTeachers();
     } catch (err) {
@@ -224,7 +235,33 @@ export function StaffManagementPage() {
             <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white" placeholder="First Name" value={teacherForm.firstName} onChange={(e) => setTeacherForm((prev) => ({ ...prev, firstName: e.target.value }))} required />
             <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white" placeholder="Last Name" value={teacherForm.lastName} onChange={(e) => setTeacherForm((prev) => ({ ...prev, lastName: e.target.value }))} required />
             <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white" placeholder="Email" type="email" value={teacherForm.email} onChange={(e) => setTeacherForm((prev) => ({ ...prev, email: e.target.value }))} required />
-            <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white" placeholder="Password" type="password" value={teacherForm.password} onChange={(e) => setTeacherForm((prev) => ({ ...prev, password: e.target.value }))} required />
+            <div className="relative">
+              <input
+                className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 pr-10 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white"
+                placeholder="Password"
+                type={showCreatePassword ? 'text' : 'password'}
+                value={teacherForm.password}
+                onChange={(e) => setTeacherForm((prev) => ({ ...prev, password: e.target.value }))}
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowCreatePassword((prev) => !prev)}
+                className="absolute inset-y-0 right-2 inline-flex items-center text-slate-500 hover:text-brand-navy"
+                aria-label={showCreatePassword ? 'Hide password' : 'Show password'}
+              >
+                {showCreatePassword ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7a9.956 9.956 0 012.287-3.592m3.11-2.122A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.542 7a9.962 9.962 0 01-4.276 5.268M15 12a3 3 0 11-6 0 3 3 0 016 0zm6 9L3 3" />
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                )}
+              </button>
+            </div>
             <select className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm focus:border-brand-sky focus:bg-white" value={teacherForm.assignedClass} onChange={(e) => setTeacherForm((prev) => ({ ...prev, assignedClass: e.target.value, assignedSection: '' }))} required>
               <option value="">Select Class</option>
               {allowedGrades.map((grade) => (
@@ -237,7 +274,7 @@ export function StaffManagementPage() {
                 <option key={section} value={section}>{section}</option>
               ))}
             </select>
-            <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white md:col-span-2" placeholder="Subjects (comma separated)" value={teacherForm.subjects} onChange={(e) => setTeacherForm((prev) => ({ ...prev, subjects: e.target.value }))} required />
+            <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white md:col-span-2" placeholder="Subjects (comma separated). Optional extra class map: Science@8/B" value={teacherForm.subjects} onChange={(e) => setTeacherForm((prev) => ({ ...prev, subjects: e.target.value }))} required />
           </div>
           <div className="mt-4">
             <button type="submit" className="rounded-lg bg-brand-navy px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-navy/90 active:scale-[0.98]">Add Teacher</button>
@@ -285,6 +322,33 @@ export function StaffManagementPage() {
           <h3 className="mb-4 text-base font-semibold text-slate-800">Edit Teacher: <span className="text-brand-navy">{selectedTeacher.firstName} {selectedTeacher.lastName}</span></h3>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white" placeholder="Login ID" value={editForm.loginId} onChange={(e) => setEditForm((prev) => ({ ...prev, loginId: e.target.value }))} required />
+            <div className="relative">
+              <input
+                className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 pr-10 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white"
+                placeholder="New Password (optional, min 6)"
+                type={showEditPassword ? 'text' : 'password'}
+                value={editForm.password}
+                onChange={(e) => setEditForm((prev) => ({ ...prev, password: e.target.value }))}
+                minLength={6}
+              />
+              <button
+                type="button"
+                onClick={() => setShowEditPassword((prev) => !prev)}
+                className="absolute inset-y-0 right-2 inline-flex items-center text-slate-500 hover:text-brand-navy"
+                aria-label={showEditPassword ? 'Hide password' : 'Show password'}
+              >
+                {showEditPassword ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7a9.956 9.956 0 012.287-3.592m3.11-2.122A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.542 7a9.962 9.962 0 01-4.276 5.268M15 12a3 3 0 11-6 0 3 3 0 016 0zm6 9L3 3" />
+                  </svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                )}
+              </button>
+            </div>
             <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white" placeholder="First Name" value={editForm.firstName} onChange={(e) => setEditForm((prev) => ({ ...prev, firstName: e.target.value }))} required />
             <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white" placeholder="Last Name" value={editForm.lastName} onChange={(e) => setEditForm((prev) => ({ ...prev, lastName: e.target.value }))} required />
             <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white" placeholder="Email" value={editForm.email} onChange={(e) => setEditForm((prev) => ({ ...prev, email: e.target.value }))} required />
@@ -300,7 +364,7 @@ export function StaffManagementPage() {
                 <option key={section} value={section}>{section}</option>
               ))}
             </select>
-            <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white md:col-span-3" placeholder="Subjects (comma separated)" value={editForm.subjects} onChange={(e) => setEditForm((prev) => ({ ...prev, subjects: e.target.value }))} required />
+            <input className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2.5 text-sm placeholder:text-slate-400 focus:border-brand-sky focus:bg-white md:col-span-3" placeholder="Subjects (comma separated). Optional extra class map: Science@8/B" value={editForm.subjects} onChange={(e) => setEditForm((prev) => ({ ...prev, subjects: e.target.value }))} required />
           </div>
           <div className="mt-4">
             <button type="submit" disabled={updating} className="rounded-lg bg-brand-navy px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-navy/90 active:scale-[0.98] disabled:opacity-60">

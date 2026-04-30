@@ -11,6 +11,11 @@ const icons: Record<string, JSX.Element> = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" />
     </svg>
   ),
+  Attendance: (
+    <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10m-11 9h12a2 2 0 002-2V7a2 2 0 00-2-2H6a2 2 0 00-2 2v11a2 2 0 002 2z" />
+    </svg>
+  ),
   'Student Management': (
     <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 14l9-5-9-5-9 5 9 5zm0 0l6.16-3.422A12.083 12.083 0 0121 12.765M12 14l-6.16-3.422A12.083 12.083 0 003 12.765M12 14v7" />
@@ -59,7 +64,12 @@ function getIcon(label: string): JSX.Element | null {
 }
 
 function getNavItems(role: string) {
-  if (role === 'TEACHER') return [{ to: '/teacher/portal', label: 'Teacher Portal' }];
+  if (role === 'TEACHER') {
+    return [
+      { to: '/teacher/dashboard', label: 'Dashboard' },
+      { to: '/teacher/attendance', label: 'Attendance' }
+    ];
+  }
   if (role === 'STUDENT') {
     return [
       { to: '/student/dashboard', label: 'Dashboard' },
@@ -113,8 +123,8 @@ interface FeatureSearchItem {
 function getFeatureSearchItems(role: string): FeatureSearchItem[] {
   if (role === 'TEACHER') {
     return [
-      { label: 'Teacher Portal', to: '/teacher/portal', keywords: ['teacher', 'home', 'portal'] },
-      { label: 'Classes', to: '/admin/classes', keywords: ['class', 'attendance', 'sections'] }
+      { label: 'Dashboard', to: '/teacher/dashboard', keywords: ['teacher', 'home', 'dashboard', 'classes'] },
+      { label: 'Attendance', to: '/teacher/attendance', keywords: ['teacher', 'attendance', 'records', 'present', 'absent'] }
     ];
   }
 

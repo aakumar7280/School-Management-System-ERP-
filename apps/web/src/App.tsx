@@ -17,12 +17,13 @@ import { StudentAdmissionPage } from './pages/StudentAdmissionPage';
 import { StudentDashboardPage } from './pages/StudentDashboardPage';
 import { StudentFeesPage } from './pages/StudentFeesPage';
 import { StudentsPage } from './pages/StudentsPage';
+import { TeacherAttendancePage } from './pages/TeacherAttendancePage';
 import { TeacherPortalPage } from './pages/TeacherPortalPage';
 
 function getDefaultPortal(role: AppRole) {
   switch (role) {
     case 'TEACHER':
-      return '/teacher/portal';
+      return '/teacher/dashboard';
     case 'STUDENT':
       return '/student/dashboard';
     case 'PARENT':
@@ -119,7 +120,7 @@ export default function App() {
         />
 
         <Route
-          path="/teacher/portal"
+          path="/teacher/dashboard"
           element={
             canAccessTeacher(session.user.role) ? (
               <TeacherPortalPage session={session} />
@@ -128,6 +129,17 @@ export default function App() {
             )
           }
         />
+        <Route
+          path="/teacher/attendance"
+          element={
+            canAccessTeacher(session.user.role) ? (
+              <TeacherAttendancePage session={session} />
+            ) : (
+              <Navigate to={defaultPortal} replace />
+            )
+          }
+        />
+        <Route path="/teacher/portal" element={<Navigate to="/teacher/dashboard" replace />} />
         <Route
           path="/student/dashboard"
           element={
