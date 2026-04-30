@@ -11,6 +11,7 @@ import {
   FeeStudentOption,
   generateBulkFeeInvoices,
   payFeeInvoiceAsAdmin,
+  recordStudentAdvancePaymentAsAdmin,
   StudentFeeAssignment,
   upsertStudentFeeAssignment
 } from '../lib/api';
@@ -93,6 +94,7 @@ export function FinancePage() {
   const [paymentMethod, setPaymentMethod] = useState<'UPI' | 'CASH'>('UPI');
   const [paymentFeeType, setPaymentFeeType] = useState('Tuition');
   const [paymentSaving, setPaymentSaving] = useState(false);
+  const [paymentModalMode, setPaymentModalMode] = useState<'regular' | 'advance'>('regular');
   const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
   const [clearingTransactions, setClearingTransactions] = useState(false);
   const [paymentMessage, setPaymentMessage] = useState<string | null>(null);
@@ -826,16 +828,17 @@ export function FinancePage() {
     }
   }
 
-  function openRecordPayment(invoiceId: string) {
-    const invoice = filteredDueStudents.find((row) => row.id === invoiceId);
-    if (!invoice) return;
+  function openRecordPayment(invoiceId?: string, mode: 'regular' | 'advance' = 'regular') {
+    const invoice = invoiceId ? filteredDueStudents.find((row) => row.id === invoiceId) ?? null : null;
+    if (mode === 'regular' && !invoice) return;
 
     const fallbackFeeType =
       selectedSavedAssignment?.components.find((component) => component.feeType.trim().length > 0)?.feeType ?? 'General';
 
-    setActivePaymentInvoiceId(invoiceId);
+    setActivePaymentInvoiceId(invoice?.id ?? null);
     setIsPaymentModalOpen(true);
-    setPaymentAmount(String(invoice.due));
+    setPaymentModalMode(mode);
+    setPaymentAmount(mode === 'advance' ? '' : String(invoice?.due ?? ''));
     setPaymentMethod('UPI');
     setPaymentFeeType(fallbackFeeType);
     setPaymentError(null);
@@ -846,6 +849,7 @@ export function FinancePage() {
     setIsPaymentModalOpen(false);
     setActivePaymentInvoiceId(null);
     setPaymentAmount('');
+    setPaymentModalMode('regular');
   }
 
   function handleOpenPrimaryPaymentModal() {
@@ -855,14 +859,24 @@ export function FinancePage() {
     }
 
     const firstDueInvoice = filteredDueStudents[0];
-    openRecordPayment(firstDueInvoice.id);
+    openRecordPayment(firstDueInvoice.id, 'regular');
+  }
+
+  function handleOpenPrimaryAdvancePaymentModal() {
+    if (!selectedStudent) {
+      setPaymentError('Please select a student first.');
+      return;
+    }
+
+    const firstDueInvoice = filteredDueStudents[0];
+    openRecordPayment(firstDueInvoice?.id, 'advance');
   }
 
   function handlePaymentInvoiceChange(invoiceId: string) {
     setActivePaymentInvoiceId(invoiceId);
     const selectedInvoice = filteredDueStudents.find((row) => row.id === invoiceId);
     if (selectedInvoice) {
-      setPaymentAmount(String(selectedInvoice.due));
+      setPaymentAmount(paymentModalMode === 'advance' ? '' : String(selectedInvoice.due));
     }
   }
 
@@ -920,6 +934,40 @@ export function FinancePage() {
       closeRecordPaymentModal();
     } catch (saveError) {
       setPaymentError(saveError instanceof Error ? saveError.message : 'Failed to record payment');
+    } finally {
+      setPaymentSaving(false);
+    }
+  }
+
+  async function handleRecordAdvancePayment() {
+    if (!selectedStudent) {
+      setPaymentError('Please select a student first.');
+      return;
+    }
+
+    const typedAmount = Number(paymentAmount);
+    if (!Number.isFinite(typedAmount) || typedAmount <= 0) {
+      setPaymentError('Enter a valid advance amount greater than 0.');
+      return;
+    }
+
+    setPaymentSaving(true);
+    setPaymentMessage(null);
+    setPaymentError(null);
+
+    try {
+      const response = await recordStudentAdvancePaymentAsAdmin(selectedStudent.id, {
+        amount: typedAmount,
+        paymentMethod,
+        feeType: paymentFeeType,
+        sourceInvoiceId: activePaymentInvoiceId ?? undefined
+      });
+
+      await loadFinanceData(month);
+      setPaymentMessage(response.message);
+      closeRecordPaymentModal();
+    } catch (saveError) {
+      setPaymentError(saveError instanceof Error ? saveError.message : 'Failed to record advance payment');
     } finally {
       setPaymentSaving(false);
     }
@@ -1448,10 +1496,17 @@ export function FinancePage() {
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => openRecordPayment(invoice.id)}
+                        onClick={() => openRecordPayment(invoice.id, 'regular')}
                         className="rounded-md bg-brand-navy px-2 py-1 text-xs font-semibold text-white shadow-sm hover:bg-brand-navy/90 disabled:opacity-60"
                       >
                         Record Payment
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openRecordPayment(invoice.id, 'advance')}
+                        className="rounded-md border border-brand-navy/30 px-2 py-1 text-xs font-semibold text-brand-navy hover:bg-brand-navy/5 disabled:opacity-60"
+                      >
+                        Record Advance
                       </button>
                       <button
                         type="button"
@@ -1493,9 +1548,6 @@ export function FinancePage() {
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50/80">
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Date</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Admission No</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Student</th>
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Class</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Mode</th>
@@ -1508,9 +1560,6 @@ export function FinancePage() {
               {filteredTransactions.map((transaction) => (
                 <tr key={transaction.id} className="border-b border-slate-100 table-row-hover">
                   <td className="px-4 py-3">{new Date(transaction.createdAt).toLocaleString()}</td>
-                  <td className="px-4 py-3">{transaction.student.admissionNo}</td>
-                  <td className="px-4 py-3">{transaction.student.name}</td>
-                  <td className="px-4 py-3">{transaction.student.className} / {transaction.student.section}</td>
                   <td className="px-4 py-3">{transaction.invoice.title}</td>
                   <td className="px-4 py-3">{transaction.feeType ?? 'General'}</td>
                   <td className="px-4 py-3">{transaction.paymentMethod}</td>
@@ -1547,6 +1596,14 @@ export function FinancePage() {
               className="mt-3 w-full rounded-md bg-brand-navy px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-navy/90 disabled:opacity-60"
             >
               Record Payment
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenPrimaryAdvancePaymentModal}
+              disabled={!selectedStudent || paymentSaving}
+              className="mt-2 w-full rounded-md border border-brand-navy/30 px-4 py-2 text-sm font-semibold text-brand-navy hover:bg-brand-navy/5 disabled:opacity-60"
+            >
+              Record Advance Payment
             </button>
           </section>
 
@@ -1768,8 +1825,12 @@ export function FinancePage() {
           <div className="w-full max-w-2xl rounded-xl border border-slate-200/80 bg-white p-5 shadow-xl">
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <h4 className="text-lg font-semibold text-brand-navy">Record Fee Payment</h4>
-                <p className="text-xs text-slate-500">Select payment details and submit.</p>
+                <h4 className="text-lg font-semibold text-brand-navy">{paymentModalMode === 'advance' ? 'Record Advance Payment' : 'Record Fee Payment'}</h4>
+                <p className="text-xs text-slate-500">
+                  {paymentModalMode === 'advance'
+                    ? 'Advance amount will settle selected and pending dues first. Remaining balance carries forward automatically.'
+                    : 'Select payment details and submit.'}
+                </p>
               </div>
               <button
                 type="button"
@@ -1782,12 +1843,13 @@ export function FinancePage() {
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="md:col-span-2">
-                <p className="mb-1 text-xs text-slate-500">Due Invoice</p>
+                <p className="mb-1 text-xs text-slate-500">{paymentModalMode === 'advance' ? 'Start With Due Invoice (Optional)' : 'Due Invoice'}</p>
                 <select
                   className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
                   value={activePaymentInvoiceId ?? ''}
                   onChange={(event) => handlePaymentInvoiceChange(event.target.value)}
                 >
+                  {paymentModalMode === 'advance' ? <option value="">No specific due selected</option> : null}
                   {filteredDueStudents.map((invoice) => (
                     <option key={invoice.id} value={invoice.id}>
                       {invoice.student.admissionNo} - {invoice.student.name} - {invoice.title} ({formatCurrency(invoice.due)})
@@ -1802,7 +1864,9 @@ export function FinancePage() {
                   <p className="text-xs text-slate-500">Invoice Due: <span className="font-semibold text-brand-navy">{formatCurrency(activePaymentInvoice?.due ?? 0)}</span></p>
                 </div>
 
-                {paymentFeeBreakdown.length === 0 ? (
+                {paymentModalMode === 'advance' ? (
+                  <p className="text-xs text-slate-500">Advance payment settles pending dues in sequence and carries extra balance forward as student credit.</p>
+                ) : paymentFeeBreakdown.length === 0 ? (
                   <p className="text-xs text-slate-500">Fee-type split is unavailable for this invoice. You can still record payment manually.</p>
                 ) : (
                   <div className="max-h-36 overflow-auto rounded-md border border-slate-200 bg-white">
@@ -1872,11 +1936,11 @@ export function FinancePage() {
               </button>
               <button
                 type="button"
-                onClick={handleRecordPayment}
+                onClick={paymentModalMode === 'advance' ? handleRecordAdvancePayment : handleRecordPayment}
                 disabled={paymentSaving}
                 className="rounded-md bg-brand-navy px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-navy/90 disabled:opacity-60"
               >
-                {paymentSaving ? 'Saving...' : 'Record Payment'}
+                {paymentSaving ? 'Saving...' : paymentModalMode === 'advance' ? 'Record Advance Payment' : 'Record Payment'}
               </button>
             </div>
           </div>

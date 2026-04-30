@@ -93,6 +93,7 @@ model Student {
   attendance    Attendance[]
   feeInvoices   FeeInvoice[]
   feeAssignment StudentFeeAssignment?
+  feeCredit     StudentFeeCredit?
   discount      Discount?
   accessUsers   StudentAccess[]
   school        School       @relation(fields: [schoolId], references: [id], onDelete: Cascade)
@@ -179,6 +180,15 @@ model FeePayment {
   dueAfterPayment Decimal?    @db.Decimal(10, 2)
   createdAt     DateTime      @default(now())
   invoice       FeeInvoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model StudentFeeCredit {
+  id        String   @id @default(cuid())
+  studentId String   @unique
+  balance   Decimal  @default(0) @db.Decimal(10, 2)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
 }
 
 model PayStub {

@@ -1036,6 +1036,33 @@ export async function payFeeInvoiceAsAdmin(
   return response.json();
 }
 
+export async function recordStudentAdvancePaymentAsAdmin(
+  studentId: string,
+  payload: { amount: number; paymentMethod: 'UPI' | 'CASH'; feeType?: string; sourceInvoiceId?: string }
+): Promise<{
+  message: string;
+  summary: {
+    studentId: string;
+    studentName: string;
+    admissionNo: string;
+    totalAppliedToInvoices: number;
+    carryForwardCredit: number;
+  };
+}> {
+  const response = await fetch(`${API_BASE_URL}/fees/students/${studentId}/advance-payments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({ message: 'Failed to record advance payment' }));
+    throw new Error(data.message ?? 'Failed to record advance payment');
+  }
+
+  return response.json();
+}
+
 export async function deleteFeeInvoiceAsAdmin(invoiceId: string): Promise<{ message: string }> {
   const response = await fetch(`${API_BASE_URL}/fees/invoices/${invoiceId}`, {
     method: 'DELETE',

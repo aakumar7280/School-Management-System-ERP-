@@ -26,6 +26,13 @@ const payFeeInvoiceSchema = z.object({
   feeType: z.string().min(1).optional()
 });
 
+const recordAdvancePaymentSchema = z.object({
+  amount: z.number().positive(),
+  paymentMethod: z.enum(['UPI', 'CASH']),
+  feeType: z.string().min(1).optional(),
+  sourceInvoiceId: z.string().min(1).optional()
+});
+
 const upsertFeeAssignmentSchema = z.object({
   billingCycle: z.enum(['YEARLY', 'QUARTERLY', 'MONTHLY']),
   components: z
@@ -157,6 +164,45 @@ function toCsvCell(value: unknown) {
     return `"${text.replace(/"/g, '""')}"`;
   }
   return text;
+}
+
+async function consumeStudentCredit(tx: any, studentId: string, requestedAmount: number) {
+  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+    return { appliedAmount: 0, remainingCreditBalance: 0 };
+  }
+
+  const credit = await tx.studentFeeCredit.findUnique({ where: { studentId } });
+  if (!credit) {
+    return { appliedAmount: 0, remainingCreditBalance: 0 };
+  }
+
+  const balance = Number(credit.balance);
+  if (!Number.isFinite(balance) || balance <= 0) {
+    return { appliedAmount: 0, remainingCreditBalance: 0 };
+  }
+
+  const appliedAmount = Math.min(balance, requestedAmount);
+  const remainingCreditBalance = Math.max(balance - appliedAmount, 0);
+
+  await tx.studentFeeCredit.update({
+    where: { studentId },
+    data: { balance: remainingCreditBalance }
+  });
+
+  return { appliedAmount, remainingCreditBalance };
+}
+
+function resolveInvoiceStatus(amount: number, paidAmount: number) {
+  const due = Math.max(amount - paidAmount, 0);
+  if (due <= 0) {
+    return 'PAID' as const;
+  }
+
+  if (paidAmount > 0) {
+    return 'PARTIAL' as const;
+  }
+
+  return 'UNPAID' as const;
 }
 
 feesRouter.use(requireStaffAuth);
@@ -687,19 +733,33 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
       });
     }
 
-    const invoice = await prisma.feeInvoice.create({
-      data: {
-        studentId: student.id,
-        title: payload.title,
-        amount: invoiceAmount,
-        paidAmount: 0,
-        dueDate,
-        status: 'UNPAID'
-      }
+    const { invoice, creditApplied } = await prisma.$transaction(async (tx: any) => {
+      const { appliedAmount } = await consumeStudentCredit(tx, student.id, invoiceAmount);
+      const paidAmount = Math.max(appliedAmount, 0);
+      const status = resolveInvoiceStatus(invoiceAmount, paidAmount);
+
+      const createdInvoice = await tx.feeInvoice.create({
+        data: {
+          studentId: student.id,
+          title: payload.title,
+          amount: invoiceAmount,
+          paidAmount,
+          dueDate,
+          status
+        }
+      });
+
+      return {
+        invoice: createdInvoice,
+        creditApplied: paidAmount
+      };
     });
 
     return res.status(201).json({
-      message: 'Fee invoice sent successfully.',
+      message:
+        creditApplied > 0
+          ? `Fee invoice sent successfully. Applied ${creditApplied.toFixed(2)} from student advance balance.`
+          : 'Fee invoice sent successfully.',
       invoice
     });
   } catch (error) {
@@ -815,15 +875,21 @@ feesRouter.post('/fees/invoices/bulk', async (req: AuthenticatedRequest, res) =>
         continue;
       }
 
-      await prisma.feeInvoice.create({
-        data: {
-          studentId: assignment.studentId,
-          title: `${assignment.billingCycle} Fee Invoice`,
-          amount: installmentAmount,
-          paidAmount: 0,
-          dueDate,
-          status: 'UNPAID'
-        }
+      await prisma.$transaction(async (tx: any) => {
+        const { appliedAmount } = await consumeStudentCredit(tx, assignment.studentId, installmentAmount);
+        const paidAmount = Math.max(appliedAmount, 0);
+        const status = resolveInvoiceStatus(installmentAmount, paidAmount);
+
+        await tx.feeInvoice.create({
+          data: {
+            studentId: assignment.studentId,
+            title: `${assignment.billingCycle} Fee Invoice`,
+            amount: installmentAmount,
+            paidAmount,
+            dueDate,
+            status
+          }
+        });
       });
 
       created += 1;
@@ -918,6 +984,149 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
   }
 });
 
+feesRouter.post('/fees/students/:studentId/advance-payments', async (req: AuthenticatedRequest, res) => {
+  try {
+    const schoolId = req.auth!.schoolId;
+    const payload = recordAdvancePaymentSchema.parse(req.body);
+
+    const student = await prisma.student.findFirst({
+      where: {
+        id: req.params.studentId,
+        schoolId,
+        isActive: true
+      },
+      select: {
+        id: true,
+        admissionNo: true,
+        firstName: true,
+        lastName: true
+      }
+    });
+
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found.' });
+    }
+
+    if (payload.sourceInvoiceId) {
+      const sourceInvoice = await prisma.feeInvoice.findFirst({
+        where: {
+          id: payload.sourceInvoiceId,
+          studentId: student.id
+        },
+        select: { id: true }
+      });
+
+      if (!sourceInvoice) {
+        return res.status(404).json({ message: 'Selected due invoice not found for this student.' });
+      }
+    }
+
+    const result = await prisma.$transaction(async (tx: any) => {
+      let remainingAmount = Number(payload.amount);
+      let totalAppliedToInvoices = 0;
+
+      const unpaidInvoices = await tx.feeInvoice.findMany({
+        where: {
+          studentId: student.id,
+          status: {
+            in: ['UNPAID', 'PARTIAL']
+          }
+        },
+        orderBy: [{ dueDate: 'asc' }, { createdAt: 'asc' }]
+      });
+
+      const orderedInvoices =
+        payload.sourceInvoiceId && unpaidInvoices.some((invoice: any) => invoice.id === payload.sourceInvoiceId)
+          ? [
+              ...unpaidInvoices.filter((invoice: any) => invoice.id === payload.sourceInvoiceId),
+              ...unpaidInvoices.filter((invoice: any) => invoice.id !== payload.sourceInvoiceId)
+            ]
+          : unpaidInvoices;
+
+      for (const invoice of orderedInvoices) {
+        if (remainingAmount <= 0) break;
+
+        const amount = Number(invoice.amount);
+        const alreadyPaid = Number(invoice.paidAmount);
+        const due = Math.max(amount - alreadyPaid, 0);
+        if (due <= 0) continue;
+
+        const payAmount = Math.min(remainingAmount, due);
+        if (payAmount <= 0) continue;
+
+        const nextPaidAmount = alreadyPaid + payAmount;
+        const nextDue = Math.max(amount - nextPaidAmount, 0);
+
+        await tx.feePayment.create({
+          data: {
+            invoiceId: invoice.id,
+            amount: payAmount,
+            paymentMethod: payload.paymentMethod,
+            feeType: payload.feeType?.trim() || 'Advance Payment',
+            dueAfterPayment: nextDue
+          }
+        });
+
+        await tx.feeInvoice.update({
+          where: { id: invoice.id },
+          data: {
+            paidAmount: nextPaidAmount,
+            status: nextDue <= 0 ? 'PAID' : 'PARTIAL'
+          }
+        });
+
+        totalAppliedToInvoices += payAmount;
+        remainingAmount -= payAmount;
+      }
+
+      if (remainingAmount > 0) {
+        await tx.studentFeeCredit.upsert({
+          where: { studentId: student.id },
+          update: {
+            balance: {
+              increment: remainingAmount
+            }
+          },
+          create: {
+            studentId: student.id,
+            balance: remainingAmount
+          }
+        });
+      }
+
+      const credit = await tx.studentFeeCredit.findUnique({
+        where: { studentId: student.id },
+        select: { balance: true }
+      });
+
+      return {
+        totalAppliedToInvoices,
+        carryForwardCredit: Number(credit?.balance ?? 0)
+      };
+    });
+
+    return res.json({
+      message:
+        result.carryForwardCredit > 0
+          ? `Advance payment recorded. ${result.totalAppliedToInvoices.toFixed(2)} adjusted against dues and ${result.carryForwardCredit.toFixed(2)} carried forward.`
+          : `Advance payment recorded. ${result.totalAppliedToInvoices.toFixed(2)} adjusted against dues.`,
+      summary: {
+        studentId: student.id,
+        studentName: `${student.firstName} ${student.lastName}`,
+        admissionNo: student.admissionNo,
+        totalAppliedToInvoices: result.totalAppliedToInvoices,
+        carryForwardCredit: result.carryForwardCredit
+      }
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ message: 'Validation failed', issues: error.issues });
+    }
+
+    return res.status(400).json({ message: 'Unable to record advance payment.' });
+  }
+});
+
 feesRouter.delete('/fees/invoices/:invoiceId', async (req: AuthenticatedRequest, res) => {
   try {
     const schoolId = req.auth!.schoolId;
@@ -977,6 +1186,17 @@ feesRouter.delete('/fees/transactions', async (req: AuthenticatedRequest, res) =
           }
         });
       }
+
+      await tx.studentFeeCredit.updateMany({
+        where: {
+          student: {
+            schoolId
+          }
+        },
+        data: {
+          balance: 0
+        }
+      });
     });
 
     return res.json({ message: 'Transaction log cleared successfully.' });
