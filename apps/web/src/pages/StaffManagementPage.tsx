@@ -2,6 +2,59 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 
 import { createTeacher, fetchAcademicStructure, fetchTeachers, GradeSetting, Teacher, updateTeacher } from '../lib/api';
 
+type TeacherEditForm = {
+  loginId: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  assignedClass: string;
+  assignedSection: string;
+  subjects: string;
+};
+
+type StaffEditDraft = {
+  selectedTeacherId: string;
+  editForm: TeacherEditForm;
+  showEditPassword: boolean;
+};
+
+const STAFF_EDIT_DRAFT_KEY = 'school_erp_staff_edit_draft';
+
+const defaultEditForm: TeacherEditForm = {
+  loginId: '',
+  password: '',
+  firstName: '',
+  lastName: '',
+  email: '',
+  assignedClass: '',
+  assignedSection: '',
+  subjects: ''
+};
+
+function readStaffEditDraft(): StaffEditDraft | null {
+  try {
+    const raw = sessionStorage.getItem(STAFF_EDIT_DRAFT_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw) as Partial<StaffEditDraft>;
+    if (!parsed.selectedTeacherId || !parsed.editForm) {
+      return null;
+    }
+
+    return {
+      selectedTeacherId: parsed.selectedTeacherId,
+      editForm: {
+        ...defaultEditForm,
+        ...parsed.editForm
+      },
+      showEditPassword: Boolean(parsed.showEditPassword)
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function StaffManagementPage() {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [loading, setLoading] = useState(true);
@@ -11,7 +64,7 @@ export function StaffManagementPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [selectedClass, setSelectedClass] = useState('ALL');
   const [selectedSection, setSelectedSection] = useState('ALL');
-  const [selectedTeacher, setSelectedTeacher] = useState<Teacher | null>(null);
+  const [selectedTeacherId, setSelectedTeacherId] = useState<string | null>(() => readStaffEditDraft()?.selectedTeacherId ?? null);
 
   const [teacherForm, setTeacherForm] = useState({
     loginId: '',
@@ -24,19 +77,10 @@ export function StaffManagementPage() {
     subjects: ''
   });
 
-  const [editForm, setEditForm] = useState({
-    loginId: '',
-    password: '',
-    firstName: '',
-    lastName: '',
-    email: '',
-    assignedClass: '',
-    assignedSection: '',
-    subjects: ''
-  });
+  const [editForm, setEditForm] = useState<TeacherEditForm>(() => readStaffEditDraft()?.editForm ?? defaultEditForm);
   const [updating, setUpdating] = useState(false);
   const [showCreatePassword, setShowCreatePassword] = useState(false);
-  const [showEditPassword, setShowEditPassword] = useState(false);
+  const [showEditPassword, setShowEditPassword] = useState(() => readStaffEditDraft()?.showEditPassword ?? false);
 
   async function loadTeachers() {
     setLoading(true);
@@ -93,7 +137,7 @@ export function StaffManagementPage() {
   }
 
   function handleSelectTeacher(teacher: Teacher) {
-    setSelectedTeacher(teacher);
+    setSelectedTeacherId(teacher.id);
     setEditForm({
       loginId: teacher.loginId,
       password: '',
@@ -109,6 +153,7 @@ export function StaffManagementPage() {
   async function handleUpdateTeacher(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    const selectedTeacher = teachers.find((teacher) => teacher.id === selectedTeacherId) ?? null;
     if (!selectedTeacher) return;
 
     setUpdating(true);
@@ -129,7 +174,6 @@ export function StaffManagementPage() {
           .map((subject) => subject.trim())
           .filter(Boolean)
       });
-      setEditForm((prev) => ({ ...prev, password: '' }));
       setMessage('Teacher details updated.');
       await loadTeachers();
     } catch (err) {
@@ -144,6 +188,10 @@ export function StaffManagementPage() {
   const allowedGrades = useMemo(() => gradeSettings.map((entry) => entry.grade), [gradeSettings]);
   const addAllowedSections = useMemo(() => gradeSettings.find((entry) => entry.grade === teacherForm.assignedClass)?.sections ?? [], [gradeSettings, teacherForm.assignedClass]);
   const editAllowedSections = useMemo(() => gradeSettings.find((entry) => entry.grade === editForm.assignedClass)?.sections ?? [], [gradeSettings, editForm.assignedClass]);
+  const selectedTeacher = useMemo(
+    () => teachers.find((teacher) => teacher.id === selectedTeacherId) ?? null,
+    [teachers, selectedTeacherId]
+  );
 
   useEffect(() => {
     if (!teacherForm.assignedClass) return;
@@ -168,6 +216,20 @@ export function StaffManagementPage() {
       }),
     [teachers, selectedClass, selectedSection]
   );
+
+  useEffect(() => {
+    if (!selectedTeacherId) {
+      sessionStorage.removeItem(STAFF_EDIT_DRAFT_KEY);
+      return;
+    }
+
+    const draft: StaffEditDraft = {
+      selectedTeacherId,
+      editForm,
+      showEditPassword
+    };
+    sessionStorage.setItem(STAFF_EDIT_DRAFT_KEY, JSON.stringify(draft));
+  }, [selectedTeacherId, editForm, showEditPassword]);
 
   if (loading) return <p className="py-10 text-center text-sm text-slate-400">Loading staff...</p>;
 
