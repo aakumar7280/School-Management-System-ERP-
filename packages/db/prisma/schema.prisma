@@ -161,6 +161,7 @@ model FeeInvoice {
   id         String   @id @default(cuid())
   studentId  String
   title      String
+  componentSnapshot String?
   amount     Decimal  @db.Decimal(10, 2)
   paidAmount Decimal  @default(0) @db.Decimal(10, 2)
   dueDate    DateTime
@@ -177,7 +178,10 @@ model FeePayment {
   amount        Decimal       @db.Decimal(10, 2)
   paymentMethod PaymentMethod
   feeType       String?
-  dueAfterPayment Decimal?    @db.Decimal(10, 2)
+  paymentDate   DateTime      @default(now())
+  feeMonth      String?
+  academicSession String?
+  dueAfterPayment Decimal?     @db.Decimal(10, 2)
   createdAt     DateTime      @default(now())
   invoice       FeeInvoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 }

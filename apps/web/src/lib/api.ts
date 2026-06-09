@@ -348,9 +348,12 @@ export interface FinanceOverview {
   feeTransactions: Array<{
     id: string;
     createdAt: string;
+    paymentDate: string;
     amount: number;
     paymentMethod: 'UPI' | 'CASH';
     feeType: string | null;
+    feeMonth: string | null;
+    academicSession: string | null;
     invoice: {
       id: string;
       title: string;
@@ -367,6 +370,10 @@ export interface FinanceOverview {
   periodInvoices: Array<{
     id: string;
     title: string;
+    componentBreakdown?: Array<{
+      feeType: string;
+      amount: number;
+    }>;
     dueDate: string;
     amount: number;
     paidAmount: number;
@@ -379,6 +386,11 @@ export interface FinanceOverview {
   dueStudents: Array<{
     id: string;
     title: string;
+    createdAt?: string;
+    componentBreakdown?: Array<{
+      feeType: string;
+      amount: number;
+    }>;
     dueDate: string;
     amount: number;
     paid: number;
@@ -778,6 +790,10 @@ export async function createFeeInvoice(payload: {
   admissionNo: string;
   title: string;
   amount?: number;
+  componentBreakdown?: Array<{
+    feeType: string;
+    amount: number;
+  }>;
   dueDate?: string;
 }): Promise<{ message: string }> {
   const response = await fetch(`${API_BASE_URL}/fees/invoices`, {
@@ -1063,7 +1079,18 @@ export async function payStudentPortalInvoice(
 
 export async function payFeeInvoiceAsAdmin(
   invoiceId: string,
-  payload: { amount: number; paymentMethod: 'UPI' | 'CASH'; feeType?: string }
+  payload: {
+    amount: number;
+    paymentMethod: 'UPI' | 'CASH';
+    feeType?: string;
+    feeTypeAllocations?: Array<{
+      feeType: string;
+      amount: number;
+    }>;
+    paymentDate?: string;
+    feeMonth?: string;
+    academicSession?: string;
+  }
 ): Promise<{ message: string }> {
   const response = await fetch(`${API_BASE_URL}/fees/invoices/${invoiceId}/pay`, {
     method: 'POST',
@@ -1081,7 +1108,15 @@ export async function payFeeInvoiceAsAdmin(
 
 export async function recordStudentAdvancePaymentAsAdmin(
   studentId: string,
-  payload: { amount: number; paymentMethod: 'UPI' | 'CASH'; feeType?: string; sourceInvoiceId?: string }
+  payload: {
+    amount: number;
+    paymentMethod: 'UPI' | 'CASH';
+    feeType?: string;
+    sourceInvoiceId?: string;
+    paymentDate?: string;
+    feeMonth?: string;
+    academicSession?: string;
+  }
 ): Promise<{
   message: string;
   summary: {

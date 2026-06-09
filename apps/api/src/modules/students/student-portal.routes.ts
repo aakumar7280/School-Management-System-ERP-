@@ -73,10 +73,16 @@ const admissionSchema = z.object({
   }
 });
 
+const feeMonthPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
+const paymentDatePattern = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
 const payStudentInvoiceSchema = z.object({
   amount: z.number().positive().optional(),
   paymentMethod: z.enum(['UPI', 'CASH']).optional(),
-  feeType: z.string().min(1).optional()
+  feeType: z.string().min(1).optional(),
+  paymentDate: z.string().regex(paymentDatePattern).optional(),
+  feeMonth: z.string().regex(feeMonthPattern).optional(),
+  academicSession: z.string().trim().min(1).max(20).optional()
 });
 
 const MULTI_DISCOUNT_REASON_PREFIX = 'MULTI_DISCOUNTS_V1:';
@@ -139,6 +145,54 @@ function computeDiscountAmount(subtotal: number, entries: DiscountEntry[]) {
   }, 0);
 
   return Math.min(Math.max(rawAmount, 0), subtotal);
+}
+
+function deriveFeeMonthFromDate(date: Date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function deriveAcademicSessionFromFeeMonth(feeMonth: string) {
+  const [yearPart, monthPart] = feeMonth.split('-');
+  const year = Number(yearPart);
+  const month = Number(monthPart);
+
+  if (!Number.isFinite(year) || !Number.isFinite(month)) {
+    return '';
+  }
+
+  const sessionStartYear = month >= 4 ? year : year - 1;
+  const sessionEndYear = String((sessionStartYear + 1) % 100).padStart(2, '0');
+  return `${sessionStartYear}-${sessionEndYear}`;
+}
+
+function parsePaymentDate(paymentDate: string | undefined) {
+  if (!paymentDate) {
+    return new Date();
+  }
+
+  if (!paymentDatePattern.test(paymentDate)) {
+    return null;
+  }
+
+  const parsed = new Date(`${paymentDate}T12:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function resolveFeeMonth(feeMonth: string | undefined, fallbackDate: Date) {
+  if (feeMonth && feeMonthPattern.test(feeMonth)) {
+    return feeMonth;
+  }
+
+  return deriveFeeMonthFromDate(fallbackDate);
+}
+
+function resolveAcademicSession(academicSession: string | undefined, feeMonth: string) {
+  const normalizedSession = academicSession?.trim() ?? '';
+  if (normalizedSession.length > 0) {
+    return normalizedSession;
+  }
+
+  return deriveAcademicSessionFromFeeMonth(feeMonth);
 }
 
 async function resolveMappedStudent(req: AuthenticatedRequest) {
@@ -483,6 +537,14 @@ studentPortalRouter.post('/student-portal/fees/:invoiceId/pay', requireStudentOr
       return res.status(400).json({ message: 'Invoice is already fully paid.' });
     }
 
+    const paymentDate = parsePaymentDate(payload.paymentDate);
+    if (!paymentDate) {
+      return res.status(400).json({ message: 'Invalid payment date.' });
+    }
+
+    const feeMonth = resolveFeeMonth(payload.feeMonth, invoice.dueDate);
+    const academicSession = resolveAcademicSession(payload.academicSession, feeMonth);
+
     const requestedAmount = payload.amount ? Number(payload.amount) : due;
     const payAmount = Math.min(requestedAmount, due);
     const overpaidAmount = Math.max(requestedAmount - due, 0);
@@ -501,6 +563,9 @@ studentPortalRouter.post('/student-portal/fees/:invoiceId/pay', requireStudentOr
           amount: payAmount,
           paymentMethod: payload.paymentMethod ?? 'UPI',
           feeType: payload.feeType,
+          paymentDate,
+          feeMonth,
+          academicSession,
           dueAfterPayment: nextDue
         }
       });
@@ -522,6 +587,9 @@ studentPortalRouter.post('/student-portal/fees/:invoiceId/pay', requireStudentOr
             amount: overpaidAmount,
             paymentMethod: payload.paymentMethod ?? 'UPI',
             feeType: creditFeeType,
+            paymentDate,
+            feeMonth,
+            academicSession,
             dueAfterPayment: nextDue
           }
         });

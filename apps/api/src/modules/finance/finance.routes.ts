@@ -10,6 +10,7 @@ financeRouter.use(requireStaffAuth);
 type InvoiceRow = {
   id: string;
   title: string;
+  componentSnapshot: string | null;
   amount: unknown;
   paidAmount: unknown;
   dueDate: Date;
@@ -57,6 +58,9 @@ type FeePaymentRow = {
   amount: unknown;
   paymentMethod: 'UPI' | 'CASH';
   feeType: string | null;
+  paymentDate: Date;
+  feeMonth: string | null;
+  academicSession: string | null;
   dueAfterPayment: unknown;
   createdAt: Date;
   invoice: {
@@ -122,6 +126,46 @@ function resolveFinancePeriod(query: Record<string, unknown>) {
     start: range.start,
     end: range.end
   };
+}
+
+function deriveFeeMonthFromDate(date: Date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function deriveAcademicSessionFromFeeMonth(feeMonth: string) {
+  const [yearPart, monthPart] = feeMonth.split('-');
+  const year = Number(yearPart);
+  const month = Number(monthPart);
+
+  if (!Number.isFinite(year) || !Number.isFinite(month)) {
+    return '';
+  }
+
+  const sessionStartYear = month >= 4 ? year : year - 1;
+  const sessionEndYear = String((sessionStartYear + 1) % 100).padStart(2, '0');
+  return `${sessionStartYear}-${sessionEndYear}`;
+}
+
+function parseInvoiceComponentSnapshot(componentSnapshot: string | null | undefined) {
+  if (!componentSnapshot) {
+    return [] as Array<{ feeType: string; amount: number }>;
+  }
+
+  try {
+    const parsed = JSON.parse(componentSnapshot) as Array<{ feeType?: string; amount?: number }>;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map((entry) => ({
+        feeType: typeof entry.feeType === 'string' ? entry.feeType.trim() : '',
+        amount: Number(entry.amount ?? 0)
+      }))
+      .filter((entry) => entry.feeType.length > 0 && Number.isFinite(entry.amount) && entry.amount > 0);
+  } catch {
+    return [];
+  }
 }
 
 financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) => {
@@ -226,7 +270,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
               schoolId
             }
           },
-          createdAt: {
+          paymentDate: {
             gte: start,
             lt: end
           }
@@ -238,6 +282,9 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
           amount: true,
           paymentMethod: true,
           feeType: true,
+          paymentDate: true,
+          feeMonth: true,
+          academicSession: true,
           dueAfterPayment: true,
           createdAt: true,
           invoice: {
@@ -277,6 +324,9 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
           amount: true,
           paymentMethod: true,
           feeType: true,
+          paymentDate: true,
+          feeMonth: true,
+          academicSession: true,
           dueAfterPayment: true,
           createdAt: true,
           invoice: {
@@ -326,6 +376,8 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
         return {
           id: invoice.id,
           title: invoice.title,
+          createdAt: invoice.createdAt.toISOString(),
+          componentBreakdown: parseInvoiceComponentSnapshot(invoice.componentSnapshot),
           dueDate: invoice.dueDate.toISOString(),
           amount,
           paid,
@@ -341,7 +393,19 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
         };
       })
       .filter((invoice: { due: number }) => invoice.due > 0)
-      .sort((a: { due: number }, b: { due: number }) => b.due - a.due);
+      .sort((left: { dueDate: string; createdAt: string; due: number }, right: { dueDate: string; createdAt: string; due: number }) => {
+        const dueDateDelta = new Date(right.dueDate).getTime() - new Date(left.dueDate).getTime();
+        if (dueDateDelta !== 0) {
+          return dueDateDelta;
+        }
+
+        const createdAtDelta = new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+        if (createdAtDelta !== 0) {
+          return createdAtDelta;
+        }
+
+        return right.due - left.due;
+      });
 
     const periodDueStudents = (invoices as InvoiceRow[])
       .map((invoice: InvoiceRow) => {
@@ -353,6 +417,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
         totalCollected += paid;
 
         return {
+          componentBreakdown: parseInvoiceComponentSnapshot(invoice.componentSnapshot),
           due
         };
       })
@@ -450,9 +515,12 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
           return {
             id: payment.id,
             createdAt: payment.createdAt.toISOString(),
+            paymentDate: payment.paymentDate.toISOString(),
             amount: Number(payment.amount),
             paymentMethod: payment.paymentMethod,
             feeType: payment.feeType,
+            feeMonth: payment.feeMonth,
+            academicSession: payment.academicSession,
             invoice: {
               id: payment.invoice.id,
               title: payment.invoice.title,
@@ -478,13 +546,17 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
             const invoiceAmount = Number(invoice.amount);
             const invoicePaidAmount = Number(invoice.paidAmount);
             const invoiceDue = Math.max(invoiceAmount - invoicePaidAmount, 0);
+            const feeMonth = deriveFeeMonthFromDate(invoice.dueDate);
 
             return {
               id: `synthetic-advance-applied-${invoice.id}`,
               createdAt: invoice.updatedAt.toISOString(),
+              paymentDate: invoice.updatedAt.toISOString(),
               amount: invoicePaidAmount,
               paymentMethod: 'UPI' as const,
               feeType: 'Advance Applied (Auto Deduction)',
+              feeMonth,
+              academicSession: deriveAcademicSessionFromFeeMonth(feeMonth),
               invoice: {
                 id: invoice.id,
                 title: invoice.title,
@@ -501,6 +573,11 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
           });
 
         return [...mappedTransactions, ...syntheticAdvanceAppliedTransactions].sort((left, right) => {
+          const paymentDateDelta = new Date(right.paymentDate).getTime() - new Date(left.paymentDate).getTime();
+          if (paymentDateDelta !== 0) {
+            return paymentDateDelta;
+          }
+
           const timeDelta = new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
           if (timeDelta !== 0) {
             return timeDelta;
@@ -517,6 +594,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
         return {
           id: invoice.id,
           title: invoice.title,
+          componentBreakdown: parseInvoiceComponentSnapshot(invoice.componentSnapshot),
           dueDate: invoice.dueDate.toISOString(),
           amount,
           paidAmount,
@@ -553,7 +631,8 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
         end: end.toISOString()
       }
     });
-  } catch {
+  } catch (error) {
+    console.error('Unable to load finance overview', error);
     return res.status(503).json({ message: 'Unable to load finance overview.' });
   }
 });

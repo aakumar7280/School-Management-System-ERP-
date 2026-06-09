@@ -10,6 +10,14 @@ const createInvoiceSchema = z.object({
   admissionNo: z.string().min(3),
   title: z.string().min(3),
   amount: z.number().positive().optional(),
+  componentBreakdown: z
+    .array(
+      z.object({
+        feeType: z.string().trim().min(1),
+        amount: z.number().positive()
+      })
+    )
+    .optional(),
   dueDate: z.string().optional()
 });
 
@@ -20,17 +28,34 @@ const createPayStubSchema = z.object({
   note: z.string().optional()
 });
 
+const feeMonthPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
+const paymentDatePattern = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
 const payFeeInvoiceSchema = z.object({
   amount: z.number().positive(),
   paymentMethod: z.enum(['UPI', 'CASH']),
-  feeType: z.string().min(1).optional()
+  feeType: z.string().min(1).optional(),
+  feeTypeAllocations: z
+    .array(
+      z.object({
+        feeType: z.string().trim().min(1),
+        amount: z.number().positive()
+      })
+    )
+    .optional(),
+  paymentDate: z.string().regex(paymentDatePattern).optional(),
+  feeMonth: z.string().regex(feeMonthPattern).optional(),
+  academicSession: z.string().trim().min(1).max(20).optional()
 });
 
 const recordAdvancePaymentSchema = z.object({
   amount: z.number().positive(),
   paymentMethod: z.enum(['UPI', 'CASH']),
   feeType: z.string().min(1).optional(),
-  sourceInvoiceId: z.string().min(1).optional()
+  sourceInvoiceId: z.string().min(1).optional(),
+  paymentDate: z.string().regex(paymentDatePattern).optional(),
+  feeMonth: z.string().regex(feeMonthPattern).optional(),
+  academicSession: z.string().trim().min(1).max(20).optional()
 });
 
 const upsertFeeAssignmentSchema = z.object({
@@ -158,6 +183,66 @@ function getNextDueDate(feeDueDayOfMonth: number, from: Date = new Date()) {
   return new Date(nextMonthYear, nextMonth, nextMonthDueDay, 12, 0, 0, 0);
 }
 
+function deriveFeeMonthFromDate(date: Date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function deriveAcademicSessionFromFeeMonth(feeMonth: string) {
+  const [yearPart, monthPart] = feeMonth.split('-');
+  const year = Number(yearPart);
+  const month = Number(monthPart);
+
+  if (!Number.isFinite(year) || !Number.isFinite(month)) {
+    return '';
+  }
+
+  const sessionStartYear = month >= 4 ? year : year - 1;
+  const sessionEndYear = String((sessionStartYear + 1) % 100).padStart(2, '0');
+  return `${sessionStartYear}-${sessionEndYear}`;
+}
+
+function deriveAcademicSessionFromDate(date: Date) {
+  return deriveAcademicSessionFromFeeMonth(deriveFeeMonthFromDate(date));
+}
+
+function buildAnnualFeeInvoiceTitle(academicSession: string) {
+  return `Annual Fee Invoice (${academicSession})`;
+}
+
+function isAnnualFeeInvoiceTitle(title: string) {
+  return /^Annual Fee Invoice \(\d{4}-\d{2}\)$/.test(title.trim());
+}
+
+function parsePaymentDate(paymentDate: string | undefined) {
+  if (!paymentDate) {
+    return new Date();
+  }
+
+  if (!paymentDatePattern.test(paymentDate)) {
+    return null;
+  }
+
+  const parsed = new Date(`${paymentDate}T12:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function resolveFeeMonth(feeMonth: string | undefined, fallbackDate: Date) {
+  if (feeMonth && feeMonthPattern.test(feeMonth)) {
+    return feeMonth;
+  }
+
+  return deriveFeeMonthFromDate(fallbackDate);
+}
+
+function resolveAcademicSession(academicSession: string | undefined, feeMonth: string) {
+  const normalizedSession = academicSession?.trim() ?? '';
+  if (normalizedSession.length > 0) {
+    return normalizedSession;
+  }
+
+  return deriveAcademicSessionFromFeeMonth(feeMonth);
+}
+
 async function ensureAdvanceCreditLedgerInvoice(tx: any, studentId: string) {
   const existingLedger = await tx.feeInvoice.findFirst({
     where: {
@@ -202,6 +287,43 @@ function toCsvCell(value: unknown) {
     return `"${text.replace(/"/g, '""')}"`;
   }
   return text;
+}
+
+function serializeInvoiceComponentSnapshot(componentBreakdown: Array<{ feeType: string; amount: number }> | undefined) {
+  const normalizedBreakdown = (componentBreakdown ?? [])
+    .map((entry) => ({
+      feeType: entry.feeType.trim(),
+      amount: Number(entry.amount)
+    }))
+    .filter((entry) => entry.feeType.length > 0 && Number.isFinite(entry.amount) && entry.amount > 0);
+
+  if (normalizedBreakdown.length === 0) {
+    return null;
+  }
+
+  return JSON.stringify(normalizedBreakdown);
+}
+
+function parseInvoiceComponentSnapshot(componentSnapshot: string | null | undefined) {
+  if (!componentSnapshot) {
+    return [] as Array<{ feeType: string; amount: number }>;
+  }
+
+  try {
+    const parsed = JSON.parse(componentSnapshot) as Array<{ feeType?: string; amount?: number }>;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map((entry) => ({
+        feeType: typeof entry.feeType === 'string' ? entry.feeType.trim() : '',
+        amount: Number(entry.amount ?? 0)
+      }))
+      .filter((entry) => entry.feeType.length > 0 && Number.isFinite(entry.amount) && entry.amount > 0);
+  } catch {
+    return [];
+  }
 }
 
 async function consumeStudentCredit(tx: any, studentId: string, requestedAmount: number) {
@@ -617,6 +739,9 @@ feesRouter.get('/fees/invoices/:invoiceId/download', async (req: AuthenticatedRe
           },
           select: {
             id: true,
+            paymentDate: true,
+            feeMonth: true,
+            academicSession: true,
             createdAt: true,
             amount: true,
             paymentMethod: true,
@@ -651,15 +776,18 @@ feesRouter.get('/fees/invoices/:invoiceId/download', async (req: AuthenticatedRe
       ['Updated At', invoice.updatedAt.toISOString()],
       [],
       ['Payments'],
-      ['Payment ID', 'Date', 'Amount', 'Method', 'Fee Type', 'Due After Payment']
+      ['Payment ID', 'Payment Date', 'Fee Month', 'Academic Session', 'Logged At', 'Amount', 'Method', 'Fee Type', 'Due After Payment']
     ];
 
     if (invoice.payments.length === 0) {
-      rows.push(['-', '-', '-', '-', '-', '-']);
+      rows.push(['-', '-', '-', '-', '-', '-', '-', '-', '-']);
     } else {
       invoice.payments.forEach((payment: (typeof invoice.payments)[number]) => {
         rows.push([
           payment.id,
+          payment.paymentDate.toISOString(),
+          payment.feeMonth ?? '',
+          payment.academicSession ?? '',
           payment.createdAt.toISOString(),
           Number(payment.amount).toFixed(2),
           payment.paymentMethod,
@@ -685,6 +813,7 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
   try {
     const schoolId = req.auth!.schoolId;
     const payload = createInvoiceSchema.parse(req.body);
+    const annualFeeInvoice = isAnnualFeeInvoiceTitle(payload.title);
 
     const student = await prisma.student.findFirst({
       where: {
@@ -738,7 +867,7 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
         discount: assignment.student.discount ?? null
       });
 
-      invoiceAmount = Math.max(normalizedAssignment.installmentAmount, 0);
+      invoiceAmount = Math.max(annualFeeInvoice ? normalizedAssignment.annualTotal : normalizedAssignment.installmentAmount, 0);
     }
 
     if (!Number.isFinite(invoiceAmount) || invoiceAmount <= 0) {
@@ -753,22 +882,61 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
 
     dueDate.setHours(12, 0, 0, 0);
 
-    const existingInvoice = await prisma.feeInvoice.findFirst({
-      where: {
-        studentId: student.id,
-        dueDate,
-        title: payload.title,
-        status: {
-          in: ['UNPAID', 'PARTIAL']
-        }
-      }
-    });
+    if (annualFeeInvoice) {
+      const requestedFeeTypes = Array.from(
+        new Set(
+          (payload.componentBreakdown ?? [])
+            .map((entry) => entry.feeType.trim())
+            .filter((feeType) => feeType.length > 0)
+        )
+      );
 
-    if (existingInvoice) {
-      return res.status(409).json({
-        message: 'Invoice already exists for this student and due date.',
-        invoice: existingInvoice
+      if (requestedFeeTypes.length === 0) {
+        return res.status(400).json({ message: 'Select at least one fee component while creating annual invoice.' });
+      }
+
+      const existingAnnualInvoices = await prisma.feeInvoice.findMany({
+        where: {
+          studentId: student.id,
+          title: payload.title
+        },
+        select: {
+          id: true,
+          componentSnapshot: true
+        }
       });
+
+      const alreadyInvoicedFeeTypeLookup = new Set(
+        existingAnnualInvoices
+          .flatMap((invoice: { componentSnapshot: string | null }) => parseInvoiceComponentSnapshot(invoice.componentSnapshot))
+          .map((entry: { feeType: string; amount: number }) => entry.feeType.trim().toLowerCase())
+      );
+
+      const overlappingFeeTypes = requestedFeeTypes.filter((feeType) => alreadyInvoicedFeeTypeLookup.has(feeType.trim().toLowerCase()));
+
+      if (overlappingFeeTypes.length > 0) {
+        return res.status(409).json({
+          message: `Invoice already exists for these fee component(s): ${overlappingFeeTypes.join(', ')}.`
+        });
+      }
+    } else {
+      const existingInvoice = await prisma.feeInvoice.findFirst({
+        where: {
+          studentId: student.id,
+          dueDate,
+          title: payload.title,
+          status: {
+            in: ['UNPAID', 'PARTIAL']
+          }
+        }
+      });
+
+      if (existingInvoice) {
+        return res.status(409).json({
+          message: 'Invoice already exists for this student and due date.',
+          invoice: existingInvoice
+        });
+      }
     }
 
     const { invoice, creditApplied } = await prisma.$transaction(async (tx: any) => {
@@ -780,6 +948,7 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
         data: {
           studentId: student.id,
           title: payload.title,
+          componentSnapshot: serializeInvoiceComponentSnapshot(payload.componentBreakdown),
           amount: invoiceAmount,
           paidAmount,
           dueDate,
@@ -788,12 +957,16 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
       });
 
       if (paidAmount > 0) {
+        const creditFeeMonth = deriveFeeMonthFromDate(dueDate);
         await tx.feePayment.create({
           data: {
             invoiceId: createdInvoice.id,
             amount: paidAmount,
             paymentMethod: 'UPI',
             feeType: 'Advance Applied (Auto Deduction)',
+            paymentDate: new Date(),
+            feeMonth: creditFeeMonth,
+            academicSession: deriveAcademicSessionFromFeeMonth(creditFeeMonth),
             dueAfterPayment: Math.max(invoiceAmount - paidAmount, 0)
           }
         });
@@ -901,22 +1074,20 @@ feesRouter.post('/fees/invoices/bulk', async (req: AuthenticatedRequest, res) =>
         discount: assignment.student.discount ?? null
       });
 
-      const installmentAmount = Math.max(normalizedAssignment.installmentAmount, 0);
-      if (installmentAmount <= 0) {
+      const annualAmount = Math.max(normalizedAssignment.annualTotal, 0);
+      if (annualAmount <= 0) {
         skippedReasons.invalidInstallment += 1;
         continue;
       }
 
       const dueDate = getNextDueDate(school.feeDueDayOfMonth);
+      const academicSession = deriveAcademicSessionFromDate(dueDate);
+      const annualInvoiceTitle = buildAnnualFeeInvoiceTitle(academicSession);
 
       const existingInvoice = await prisma.feeInvoice.findFirst({
         where: {
           studentId: assignment.studentId,
-          dueDate,
-          title: `${assignment.billingCycle} Fee Invoice`,
-          status: {
-            in: ['UNPAID', 'PARTIAL']
-          }
+          title: annualInvoiceTitle
         }
       });
 
@@ -926,15 +1097,15 @@ feesRouter.post('/fees/invoices/bulk', async (req: AuthenticatedRequest, res) =>
       }
 
       await prisma.$transaction(async (tx: any) => {
-        const { appliedAmount } = await consumeStudentCredit(tx, assignment.studentId, installmentAmount);
+        const { appliedAmount } = await consumeStudentCredit(tx, assignment.studentId, annualAmount);
         const paidAmount = Math.max(appliedAmount, 0);
-        const status = resolveInvoiceStatus(installmentAmount, paidAmount);
+        const status = resolveInvoiceStatus(annualAmount, paidAmount);
 
         const createdInvoice = await tx.feeInvoice.create({
           data: {
             studentId: assignment.studentId,
-            title: `${assignment.billingCycle} Fee Invoice`,
-            amount: installmentAmount,
+            title: annualInvoiceTitle,
+            amount: annualAmount,
             paidAmount,
             dueDate,
             status
@@ -942,13 +1113,17 @@ feesRouter.post('/fees/invoices/bulk', async (req: AuthenticatedRequest, res) =>
         });
 
         if (paidAmount > 0) {
+          const creditFeeMonth = deriveFeeMonthFromDate(dueDate);
           await tx.feePayment.create({
             data: {
               invoiceId: createdInvoice.id,
               amount: paidAmount,
               paymentMethod: 'UPI',
               feeType: 'Advance Applied (Auto Deduction)',
-              dueAfterPayment: Math.max(installmentAmount - paidAmount, 0)
+              paymentDate: new Date(),
+              feeMonth: creditFeeMonth,
+              academicSession: deriveAcademicSessionFromFeeMonth(creditFeeMonth),
+              dueAfterPayment: Math.max(annualAmount - paidAmount, 0)
             }
           });
         }
@@ -998,7 +1173,23 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
       return res.status(400).json({ message: 'Invoice is already fully paid.' });
     }
 
-    const requestedAmount = Number(payload.amount);
+    const paymentDate = parsePaymentDate(payload.paymentDate);
+    if (!paymentDate) {
+      return res.status(400).json({ message: 'Invalid payment date.' });
+    }
+
+    const feeMonth = resolveFeeMonth(payload.feeMonth, invoice.dueDate);
+    const academicSession = resolveAcademicSession(payload.academicSession, feeMonth);
+
+    const normalizedAllocations = (payload.feeTypeAllocations ?? [])
+      .map((allocation) => ({
+        feeType: allocation.feeType.trim(),
+        amount: Number(allocation.amount)
+      }))
+      .filter((allocation) => allocation.feeType.length > 0 && Number.isFinite(allocation.amount) && allocation.amount > 0);
+
+    const allocatedAmount = normalizedAllocations.reduce((sum, allocation) => sum + allocation.amount, 0);
+    const requestedAmount = normalizedAllocations.length > 0 ? allocatedAmount : Number(payload.amount);
     const payAmount = Math.min(requestedAmount, due);
     const overpaidAmount = Math.max(requestedAmount - due, 0);
 
@@ -1006,19 +1197,48 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
       return res.status(400).json({ message: 'Payment amount must be greater than zero.' });
     }
 
+    if (normalizedAllocations.length > 0 && Math.abs(allocatedAmount - Number(payload.amount)) > 0.009) {
+      return res.status(400).json({ message: 'Fee type allocation total must match the payment amount.' });
+    }
+
     const nextPaidAmount = alreadyPaid + payAmount;
     const nextDue = Math.max(amount - nextPaidAmount, 0);
 
     const result = await prisma.$transaction(async (tx: any) => {
-      await tx.feePayment.create({
-        data: {
-          invoiceId: invoice.id,
-          amount: payAmount,
-          paymentMethod: payload.paymentMethod,
-          feeType: payload.feeType,
-          dueAfterPayment: nextDue
+      const paymentAllocations = normalizedAllocations.length > 0
+        ? normalizedAllocations
+        : [{ feeType: payload.feeType?.trim() || 'General', amount: payAmount }];
+
+      let remainingPayAmount = payAmount;
+      let runningDue = due;
+
+      for (const allocation of paymentAllocations) {
+        if (remainingPayAmount <= 0) {
+          break;
         }
-      });
+
+        const allocationAmount = Math.min(allocation.amount, remainingPayAmount);
+        if (allocationAmount <= 0) {
+          continue;
+        }
+
+        runningDue = Math.max(runningDue - allocationAmount, 0);
+
+        await tx.feePayment.create({
+          data: {
+            invoiceId: invoice.id,
+            amount: allocationAmount,
+            paymentMethod: payload.paymentMethod,
+            feeType: allocation.feeType,
+            paymentDate,
+            feeMonth,
+            academicSession,
+            dueAfterPayment: runningDue
+          }
+        });
+
+        remainingPayAmount -= allocationAmount;
+      }
 
       const updatedInvoice = await tx.feeInvoice.update({
         where: { id: invoice.id },
@@ -1037,6 +1257,9 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
             amount: overpaidAmount,
             paymentMethod: payload.paymentMethod,
             feeType: creditFeeType,
+            paymentDate,
+            feeMonth,
+            academicSession,
             dueAfterPayment: nextDue
           }
         });
@@ -1134,6 +1357,14 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
       }
     }
 
+    const paymentDate = parsePaymentDate(payload.paymentDate);
+    if (!paymentDate) {
+      return res.status(400).json({ message: 'Invalid payment date.' });
+    }
+
+    const normalizedFeeMonth = payload.feeMonth && feeMonthPattern.test(payload.feeMonth) ? payload.feeMonth : undefined;
+    const normalizedAcademicSession = payload.academicSession?.trim() ? payload.academicSession.trim() : undefined;
+
     const result = await prisma.$transaction(async (tx: any) => {
       let remainingAmount = Number(payload.amount);
       let totalAppliedToInvoices = 0;
@@ -1169,6 +1400,8 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
 
         const nextPaidAmount = alreadyPaid + payAmount;
         const nextDue = Math.max(amount - nextPaidAmount, 0);
+        const allocationFeeMonth = normalizedFeeMonth ?? deriveFeeMonthFromDate(new Date(invoice.dueDate));
+        const allocationAcademicSession = normalizedAcademicSession ?? deriveAcademicSessionFromFeeMonth(allocationFeeMonth);
 
         await tx.feePayment.create({
           data: {
@@ -1176,6 +1409,9 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
             amount: payAmount,
             paymentMethod: payload.paymentMethod,
             feeType: payload.feeType?.trim() ? `${payload.feeType.trim()} (Advance Applied)` : 'Advance Applied',
+            paymentDate,
+            feeMonth: allocationFeeMonth,
+            academicSession: allocationAcademicSession,
             dueAfterPayment: nextDue
           }
         });
@@ -1194,21 +1430,35 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
 
       if (remainingAmount > 0) {
         const creditFeeType = payload.feeType?.trim() ? `${payload.feeType.trim()} (Advance Credit)` : 'Advance Credit';
+        let creditMonthReferenceDate = paymentDate;
 
         let advanceLogInvoiceId: string;
         if (payload.sourceInvoiceId) {
           advanceLogInvoiceId = payload.sourceInvoiceId;
+          const sourceInvoice = orderedInvoices.find((invoice: any) => invoice.id === payload.sourceInvoiceId);
+          if (sourceInvoice?.dueDate) {
+            creditMonthReferenceDate = new Date(sourceInvoice.dueDate);
+          }
         } else if (orderedInvoices.length > 0) {
           advanceLogInvoiceId = orderedInvoices[0].id;
+          if (orderedInvoices[0].dueDate) {
+            creditMonthReferenceDate = new Date(orderedInvoices[0].dueDate);
+          }
         } else {
           const latestInvoice = await tx.feeInvoice.findFirst({
             where: { studentId: student.id },
             orderBy: [{ dueDate: 'desc' }, { createdAt: 'desc' }],
-            select: { id: true }
+            select: { id: true, dueDate: true }
           });
 
           advanceLogInvoiceId = latestInvoice?.id ?? (await ensureAdvanceCreditLedgerInvoice(tx, student.id));
+          if (latestInvoice?.dueDate) {
+            creditMonthReferenceDate = latestInvoice.dueDate;
+          }
         }
+
+        const creditFeeMonth = normalizedFeeMonth ?? deriveFeeMonthFromDate(creditMonthReferenceDate);
+        const creditAcademicSession = normalizedAcademicSession ?? deriveAcademicSessionFromFeeMonth(creditFeeMonth);
 
         await tx.feePayment.create({
           data: {
@@ -1216,6 +1466,9 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
             amount: remainingAmount,
             paymentMethod: payload.paymentMethod,
             feeType: creditFeeType,
+            paymentDate,
+            feeMonth: creditFeeMonth,
+            academicSession: creditAcademicSession,
             dueAfterPayment: 0
           }
         });

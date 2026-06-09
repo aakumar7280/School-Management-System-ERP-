@@ -21,10 +21,84 @@ function formatCurrency(value: number) {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value);
 }
 
+function getTodayDateValue() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getCurrentMonthValue() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function getNextMonthValue(monthValue: string) {
+  const [yearPart, monthPart] = monthValue.split('-').map((value) => Number(value));
+  if (!Number.isFinite(yearPart) || !Number.isFinite(monthPart)) {
+    return getCurrentMonthValue();
+  }
+
+  const date = new Date(yearPart, monthPart - 1, 1);
+  date.setMonth(date.getMonth() + 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function getEndOfMonthDateValue(monthValue: string) {
+  const [yearPart, monthPart] = monthValue.split('-').map((value) => Number(value));
+  if (!Number.isFinite(yearPart) || !Number.isFinite(monthPart)) {
+    return `${getCurrentMonthValue()}-28`;
+  }
+
+  const endOfMonth = new Date(yearPart, monthPart, 0);
+  const year = endOfMonth.getFullYear();
+  const month = String(endOfMonth.getMonth() + 1).padStart(2, '0');
+  const day = String(endOfMonth.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getMonthValueFromDate(dateValue: string) {
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return getCurrentMonthValue();
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+function deriveAcademicSessionFromMonth(monthValue: string) {
+  const [yearPart, monthPart] = monthValue.split('-').map((value) => Number(value));
+  if (!Number.isFinite(yearPart) || !Number.isFinite(monthPart)) {
+    return '';
+  }
+
+  const sessionStartYear = monthPart >= 4 ? yearPart : yearPart - 1;
+  const sessionEndYear = String((sessionStartYear + 1) % 100).padStart(2, '0');
+  return `${sessionStartYear}-${sessionEndYear}`;
+}
+
 function cadenceLabel(cadence: FeeComponentCadence) {
   if (cadence === 'MONTHLY') return 'Monthly';
   if (cadence === 'YEARLY') return 'Yearly';
   return 'Once';
+}
+
+function isAnnualFeeInvoiceTitle(title: string) {
+  return /^Annual Fee Invoice \(\d{4}-\d{2}\)$/.test(title.trim());
+}
+
+function isOneTimeFeeType(feeType: string) {
+  return feeType.trim().toLowerCase() === 'admission fee';
+}
+
+function isAdvanceTransactionFeeType(feeType: string | null | undefined) {
+  const normalized = (feeType ?? '').trim().toLowerCase();
+  return normalized.includes('advance applied') || normalized.includes('auto deduction') || normalized.includes('advance credit');
+}
+
+function extractFeeTypeParts(feeType: string | null | undefined) {
+  return (feeType ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
 }
 
 interface CollapsiblePanelProps {
@@ -92,7 +166,11 @@ export function FinancePage() {
   const [activePaymentInvoiceId, setActivePaymentInvoiceId] = useState<string | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'UPI' | 'CASH'>('UPI');
-  const [paymentFeeType, setPaymentFeeType] = useState('Tuition');
+  const [paymentFeeType, setPaymentFeeType] = useState('Tuition Fee');
+  const [selectedPaymentFeeTypes, setSelectedPaymentFeeTypes] = useState<string[]>([]);
+  const [paymentDate, setPaymentDate] = useState(() => getTodayDateValue());
+  const [paymentFeeMonth, setPaymentFeeMonth] = useState(() => getCurrentMonthValue());
+  const [paymentAcademicSession, setPaymentAcademicSession] = useState(() => deriveAcademicSessionFromMonth(getCurrentMonthValue()));
   const [paymentSaving, setPaymentSaving] = useState(false);
   const [paymentModalMode, setPaymentModalMode] = useState<'regular' | 'advance'>('regular');
   const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
@@ -102,12 +180,34 @@ export function FinancePage() {
   const [isInvoicePreviewOpen, setIsInvoicePreviewOpen] = useState(false);
   const [invoicePreviewSelectedComponentIds, setInvoicePreviewSelectedComponentIds] = useState<string[]>([]);
   const [invoicePreviewSelectedDiscountIds, setInvoicePreviewSelectedDiscountIds] = useState<string[]>([]);
+  const [hasTouchedInvoicePreviewDiscountSelection, setHasTouchedInvoicePreviewDiscountSelection] = useState(false);
   const [invoiceDueThisMonth, setInvoiceDueThisMonth] = useState(true);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [activeAccordionPanel, setActiveAccordionPanel] = useState<AccordionPanelKey | null>('studentSelection');
   const [pinnedPanels, setPinnedPanels] = useState<PinnedPanelKey[]>(['summary']);
 
-  const feeTypeOptions = ['Tuition', 'Transport', 'Meals', 'Uniform', 'Sports', 'Lab', 'Library', 'Hostel', 'Exam', 'Other'];
+  const feeTypeOptions = [
+    'Tuition Fee',
+    'Transport Fee',
+    'Admission Fee',
+    'Meals',
+    'Uniform',
+    'Sports',
+    'Activity Fees',
+    'Picnic Fees',
+    'Annual Function Fees',
+    'Book Set',
+    'Notebook Fee',
+    'Stationary Fee',
+    'Diary',
+    'ID Card',
+    'Continuation Fee',
+    'Lab',
+    'Library',
+    'Hostel',
+    'Exam',
+    'Other'
+  ];
 
   const classFilterOptions = useMemo(() => {
     const options = new Set<string>();
@@ -141,7 +241,22 @@ export function FinancePage() {
   const filteredDueStudents = useMemo(() => {
     const allDue = overview?.dueStudents ?? [];
     if (!selectedStudent) return [];
-    return allDue.filter((invoice) => invoice.student.admissionNo === selectedStudent.admissionNo);
+    return allDue
+      .filter((invoice) => invoice.student.admissionNo === selectedStudent.admissionNo)
+      .sort((left, right) => {
+        const dueDateDelta = new Date(right.dueDate).getTime() - new Date(left.dueDate).getTime();
+        if (dueDateDelta !== 0) {
+          return dueDateDelta;
+        }
+
+        const leftCreatedAt = 'createdAt' in left && typeof left.createdAt === 'string' ? new Date(left.createdAt).getTime() : 0;
+        const rightCreatedAt = 'createdAt' in right && typeof right.createdAt === 'string' ? new Date(right.createdAt).getTime() : 0;
+        if (rightCreatedAt !== leftCreatedAt) {
+          return rightCreatedAt - leftCreatedAt;
+        }
+
+        return right.due - left.due;
+      });
   }, [overview?.dueStudents, selectedStudent]);
 
   const selectedMonthWindow = useMemo(() => {
@@ -196,12 +311,13 @@ export function FinancePage() {
     [nextMonthDueStudents]
   );
 
+  const currentInvoiceMonth = useMemo(() => getCurrentMonthValue(), []);
+
   const nextMonthLabel = useMemo(() => {
-    const [yearPart, monthPart] = month.split('-').map((value) => Number(value));
+    const [yearPart, monthPart] = getNextMonthValue(currentInvoiceMonth).split('-').map((value) => Number(value));
     const date = new Date(yearPart, monthPart - 1, 1);
-    date.setMonth(date.getMonth() + 1);
     return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-  }, [month]);
+  }, [currentInvoiceMonth]);
 
   const defaultPreviousDueDate = useMemo(() => {
     const previousDate = new Date(selectedMonthWindow.start);
@@ -231,70 +347,92 @@ export function FinancePage() {
   );
 
   const paymentFeeBreakdown = useMemo(() => {
-    if (!activePaymentInvoice || !selectedSavedAssignment || selectedSavedAssignment.components.length === 0) {
+    if (!activePaymentInvoice) {
       return [];
     }
 
-    const installmentCount =
-      selectedSavedAssignment.billingCycle === 'MONTHLY'
-        ? 12
-        : selectedSavedAssignment.billingCycle === 'QUARTERLY'
-          ? 4
-          : 1;
-    const monthlyMultiplier = selectedSavedAssignment.billingCycle === 'MONTHLY' ? 1 : selectedSavedAssignment.billingCycle === 'QUARTERLY' ? 3 : 12;
+    const invoiceComponentBreakdown = activePaymentInvoice.componentBreakdown ?? [];
+    if (invoiceComponentBreakdown.length === 0) {
+      return [];
+    }
 
-    const grouped = new Map<string, { monthlyPayable: number; installmentPayable: number }>();
+    const paidByFeeType = new Map<string, number>();
 
-    selectedSavedAssignment.components.forEach((component) => {
-      const componentAmount = Number(component.amount || 0);
-      if (!Number.isFinite(componentAmount) || componentAmount <= 0) {
-        return;
-      }
+    filteredTransactions
+      .filter((transaction) => transaction.invoice.id === activePaymentInvoice.id)
+      .forEach((transaction) => {
+        if (isAdvanceTransactionFeeType(transaction.feeType)) {
+          return;
+        }
 
-      const monthlyPayable =
-        component.cadence === 'MONTHLY'
-          ? componentAmount
-          : component.cadence === 'YEARLY'
-            ? componentAmount / 12
-            : 0;
-      const installmentPayable =
-        component.cadence === 'MONTHLY'
-          ? componentAmount * monthlyMultiplier
-          : component.cadence === 'YEARLY'
-            ? componentAmount / installmentCount
-            : componentAmount;
-      const current = grouped.get(component.feeType) ?? { monthlyPayable: 0, installmentPayable: 0 };
+        const feeTypeParts = extractFeeTypeParts(transaction.feeType);
+        if (feeTypeParts.length === 0) {
+          return;
+        }
 
-      grouped.set(component.feeType, {
-        monthlyPayable: current.monthlyPayable + monthlyPayable,
-        installmentPayable: current.installmentPayable + installmentPayable
+        const splitAmount = transaction.amount / feeTypeParts.length;
+        feeTypeParts.forEach((feeTypePart) => {
+          paidByFeeType.set(feeTypePart, (paidByFeeType.get(feeTypePart) ?? 0) + splitAmount);
+        });
       });
-    });
 
-    const installmentSubtotal = Array.from(grouped.values()).reduce((sum, value) => sum + value.installmentPayable, 0);
-    if (installmentSubtotal <= 0) {
-      return [];
-    }
-
-    const invoiceDue = Math.max(activePaymentInvoice.due, 0);
-
-    return Array.from(grouped.entries())
-      .map(([feeType, value]) => ({
+    return invoiceComponentBreakdown
+      .map(({ feeType, amount }) => ({
         feeType,
-        monthlyPayable: value.monthlyPayable,
-        installmentPayable: value.installmentPayable,
-        suggestedDueShare: (value.installmentPayable / installmentSubtotal) * invoiceDue
+        monthlyPayable: 0,
+        installmentPayable: amount,
+        paidAmount: Math.min(paidByFeeType.get(feeType) ?? 0, amount),
+        remainingAmount: Math.max(amount - (paidByFeeType.get(feeType) ?? 0), 0)
       }))
-      .sort((left, right) => right.suggestedDueShare - left.suggestedDueShare);
-  }, [activePaymentInvoice, selectedSavedAssignment]);
+      .filter((entry) => entry.remainingAmount > 0.009)
+      .sort((left, right) => right.remainingAmount - left.remainingAmount);
+  }, [activePaymentInvoice, filteredTransactions]);
 
   const paymentFeeTypeOptions = useMemo(() => {
     if (paymentFeeBreakdown.length > 0) {
-      return paymentFeeBreakdown.map((item) => item.feeType);
+      return Array.from(new Set(paymentFeeBreakdown.map((item) => item.feeType))).filter((item) => item.trim().length > 0);
     }
 
-    return Array.from(new Set([paymentFeeType, ...feeTypeOptions])).filter((item) => item.trim().length > 0);
-  }, [feeTypeOptions, paymentFeeBreakdown, paymentFeeType]);
+    if (activePaymentInvoice) {
+      const existingInvoiceFeeTypes = filteredTransactions
+        .filter((transaction) => transaction.invoice.id === activePaymentInvoice.id)
+        .flatMap((transaction) => extractFeeTypeParts(transaction.feeType));
+
+      return Array.from(new Set([...selectedPaymentFeeTypes, paymentFeeType, ...existingInvoiceFeeTypes])).filter((item) => item.trim().length > 0);
+    }
+
+    return Array.from(new Set([...selectedPaymentFeeTypes, paymentFeeType, ...feeTypeOptions])).filter((item) => item.trim().length > 0);
+  }, [activePaymentInvoice, feeTypeOptions, filteredTransactions, paymentFeeBreakdown, paymentFeeType, selectedPaymentFeeTypes]);
+
+  useEffect(() => {
+    if (paymentFeeTypeOptions.length === 0) {
+      if (selectedPaymentFeeTypes.length > 0) {
+        setSelectedPaymentFeeTypes([]);
+      }
+      return;
+    }
+
+    setSelectedPaymentFeeTypes((previous) => {
+      const normalized = previous.filter((item) => paymentFeeTypeOptions.includes(item));
+      const nextSelection = normalized.length > 0 ? normalized : [paymentFeeTypeOptions[0]];
+
+      const unchanged =
+        nextSelection.length === previous.length &&
+        nextSelection.every((item, index) => item === previous[index]);
+
+      return unchanged ? previous : nextSelection;
+    });
+  }, [paymentFeeTypeOptions, selectedPaymentFeeTypes]);
+
+  useEffect(() => {
+    if (selectedPaymentFeeTypes.length === 0) {
+      return;
+    }
+
+    if (!selectedPaymentFeeTypes.includes(paymentFeeType)) {
+      setPaymentFeeType(selectedPaymentFeeTypes[0]);
+    }
+  }, [paymentFeeType, selectedPaymentFeeTypes]);
 
   const yearlySubtotal = useMemo(
     () =>
@@ -346,28 +484,10 @@ export function FinancePage() {
       return 0;
     }
 
-    const installmentCount =
-      selectedSavedAssignment.billingCycle === 'MONTHLY'
-        ? 12
-        : selectedSavedAssignment.billingCycle === 'QUARTERLY'
-          ? 4
-          : 1;
-    const cycleMonthMultiplier =
-      selectedSavedAssignment.billingCycle === 'MONTHLY'
-        ? 1
-        : selectedSavedAssignment.billingCycle === 'QUARTERLY'
-          ? 3
-          : 12;
-
     const components = selectedSavedAssignment.components
       .map((component) => {
         const baseAmount = Number(component.amount || 0);
-        const cyclePayable =
-          component.cadence === 'MONTHLY'
-            ? baseAmount * cycleMonthMultiplier
-            : component.cadence === 'YEARLY'
-              ? baseAmount / installmentCount
-              : baseAmount;
+        const cyclePayable = component.cadence === 'MONTHLY' ? baseAmount * 12 : component.cadence === 'YEARLY' ? baseAmount : baseAmount;
 
         return {
           id: component.id,
@@ -397,7 +517,9 @@ export function FinancePage() {
           ? [selectedSavedAssignment.discount]
           : [];
     const effectiveDiscountIds =
-      invoicePreviewSelectedDiscountIds.length > 0
+      hasTouchedInvoicePreviewDiscountSelection
+        ? invoicePreviewSelectedDiscountIds
+        : invoicePreviewSelectedDiscountIds.length > 0
         ? invoicePreviewSelectedDiscountIds
         : discounts.map((discount) => discount.id);
 
@@ -418,7 +540,7 @@ export function FinancePage() {
 
     const discountAmount = Math.min(Math.max(rawDiscount, 0), componentSubtotal);
     return Math.max(componentSubtotal - discountAmount, 0);
-  }, [invoicePreviewSelectedComponentIds, invoicePreviewSelectedDiscountIds, selectedSavedAssignment]);
+  }, [hasTouchedInvoicePreviewDiscountSelection, invoicePreviewSelectedComponentIds, invoicePreviewSelectedDiscountIds, selectedSavedAssignment]);
 
   const hasCurrentMonthPaymentActivity = useMemo(
     () =>
@@ -482,7 +604,7 @@ export function FinancePage() {
     () =>
       filteredTransactions
         .filter((transaction) => {
-          const transactionDate = new Date(transaction.createdAt);
+          const transactionDate = new Date(transaction.paymentDate);
           if (transactionDate < selectedMonthWindow.start || transactionDate >= selectedMonthWindow.end) {
             return false;
           }
@@ -499,7 +621,7 @@ export function FinancePage() {
     () =>
       filteredTransactions
         .filter((transaction) => {
-          const transactionDate = new Date(transaction.createdAt);
+          const transactionDate = new Date(transaction.paymentDate);
           if (transactionDate < selectedMonthWindow.start || transactionDate >= selectedMonthWindow.end) {
             return false;
           }
@@ -538,11 +660,30 @@ export function FinancePage() {
   }, [currentMonthDueFromGeneratedInvoices, hasCurrentMonthInvoiceRecord, hasCurrentMonthPaymentActivity]);
 
   const invoicePreviewInstallmentLabel = useMemo(() => {
-    if (!selectedSavedAssignment) return 'Monthly';
-    if (selectedSavedAssignment.billingCycle === 'MONTHLY') return 'Monthly';
-    if (selectedSavedAssignment.billingCycle === 'QUARTERLY') return 'Quarterly';
-    return 'Yearly';
-  }, [selectedSavedAssignment]);
+    return 'Annual';
+  }, []);
+
+  const previewInvoiceMonth = useMemo(
+    () => (invoiceDueThisMonth ? currentInvoiceMonth : getNextMonthValue(currentInvoiceMonth)),
+    [currentInvoiceMonth, invoiceDueThisMonth]
+  );
+
+  const alreadyInvoicedFeeTypesForPreview = useMemo(() => {
+    if (!selectedStudent) {
+      return new Set<string>();
+    }
+
+    const targetSession = deriveAcademicSessionFromMonth(previewInvoiceMonth);
+    const sessionTitle = `Annual Fee Invoice (${targetSession})`;
+
+    const feeTypes = filteredDueStudents
+      .filter((invoice) => invoice.title === sessionTitle)
+      .flatMap((invoice) => invoice.componentBreakdown ?? [])
+      .map((entry) => entry.feeType.trim().toLowerCase())
+      .filter((feeType) => feeType.length > 0);
+
+    return new Set(feeTypes);
+  }, [filteredDueStudents, previewInvoiceMonth, selectedStudent]);
 
   const invoicePreviewComponents = useMemo(() => {
     if (!selectedSavedAssignment) {
@@ -556,19 +697,6 @@ export function FinancePage() {
       }>;
     }
 
-    const installmentCount =
-      selectedSavedAssignment.billingCycle === 'MONTHLY'
-        ? 12
-        : selectedSavedAssignment.billingCycle === 'QUARTERLY'
-          ? 4
-          : 1;
-    const cycleMonthMultiplier =
-      selectedSavedAssignment.billingCycle === 'MONTHLY'
-        ? 1
-        : selectedSavedAssignment.billingCycle === 'QUARTERLY'
-          ? 3
-          : 12;
-
     return selectedSavedAssignment.components
       .map((component) => {
         const baseAmount = Number(component.amount || 0);
@@ -578,12 +706,7 @@ export function FinancePage() {
             : component.cadence === 'YEARLY'
               ? baseAmount / 12
               : 0;
-        const cyclePayable =
-          component.cadence === 'MONTHLY'
-            ? baseAmount * cycleMonthMultiplier
-            : component.cadence === 'YEARLY'
-              ? baseAmount / installmentCount
-              : baseAmount;
+        const cyclePayable = component.cadence === 'MONTHLY' ? baseAmount * 12 : component.cadence === 'YEARLY' ? baseAmount : baseAmount;
 
         return {
           id: component.id,
@@ -594,9 +717,10 @@ export function FinancePage() {
           cyclePayable
         };
       })
+      .filter((component) => !alreadyInvoicedFeeTypesForPreview.has(component.feeType.trim().toLowerCase()))
       .filter((component) => Number.isFinite(component.baseAmount) && component.baseAmount > 0)
       .sort((left, right) => right.cyclePayable - left.cyclePayable);
-  }, [selectedSavedAssignment]);
+  }, [alreadyInvoicedFeeTypesForPreview, selectedSavedAssignment]);
 
   const invoicePreviewDiscounts = useMemo(() => {
     if (!selectedSavedAssignment) {
@@ -641,7 +765,9 @@ export function FinancePage() {
         : fallbackInvoicePreviewComponentIds;
 
   const effectiveInvoicePreviewDiscountIds =
-    invoicePreviewSelectedDiscountIds.length > 0
+    hasTouchedInvoicePreviewDiscountSelection
+      ? invoicePreviewSelectedDiscountIds
+      : invoicePreviewSelectedDiscountIds.length > 0
       ? invoicePreviewSelectedDiscountIds
       : invoicePreviewDiscounts.map((discount) => discount.id);
 
@@ -676,6 +802,35 @@ export function FinancePage() {
     [selectedInvoiceComponentSubtotal, selectedInvoiceDiscountAmount]
   );
 
+  const selectedInvoiceComponentBreakdown = useMemo(() => {
+    if (selectedInvoiceComponents.length === 0 || selectedInvoiceNetAmount <= 0) {
+      return [] as Array<{ feeType: string; amount: number }>;
+    }
+
+    const componentSubtotal = selectedInvoiceComponentSubtotal;
+    const groupedAmounts = new Map<string, number>();
+
+    selectedInvoiceComponents.forEach((component) => {
+      const baseAmount = Number(component.cyclePayable || 0);
+      if (!Number.isFinite(baseAmount) || baseAmount <= 0) {
+        return;
+      }
+
+      const proportionalDiscount = componentSubtotal > 0 ? (baseAmount / componentSubtotal) * selectedInvoiceDiscountAmount : 0;
+      const netAmount = Math.max(baseAmount - proportionalDiscount, 0);
+      if (netAmount <= 0) {
+        return;
+      }
+
+      groupedAmounts.set(component.feeType, (groupedAmounts.get(component.feeType) ?? 0) + netAmount);
+    });
+
+    return Array.from(groupedAmounts.entries()).map(([feeType, amount]) => ({
+      feeType,
+      amount: Number(amount.toFixed(2))
+    }));
+  }, [selectedInvoiceComponentSubtotal, selectedInvoiceComponents, selectedInvoiceDiscountAmount, selectedInvoiceNetAmount]);
+
   const selectedMonthInvoicePayable = useMemo(
     () => Math.max(selectedInvoiceNetAmount, 0),
     [selectedInvoiceNetAmount]
@@ -691,12 +846,35 @@ export function FinancePage() {
     [carryForwardDueTotal, effectiveNextMonthDue]
   );
 
+  const currentCalendarMonthWindow = useMemo(() => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const nextEnd = new Date(now.getFullYear(), now.getMonth() + 2, 1);
+    return { start, end, nextEnd };
+  }, []);
+
   const previewInvoiceDueDate = useMemo(() => {
-    const baseDate = invoiceDueThisMonth ? selectedMonthWindow.start : nextMonthWindow.start;
-    const year = baseDate.getFullYear();
-    const monthPart = String(baseDate.getMonth() + 1).padStart(2, '0');
-    return `${year}-${monthPart}-01`;
-  }, [invoiceDueThisMonth, nextMonthWindow.start, selectedMonthWindow.start]);
+    const invoiceMonth = invoiceDueThisMonth ? currentInvoiceMonth : getNextMonthValue(currentInvoiceMonth);
+    return getEndOfMonthDateValue(invoiceMonth);
+  }, [currentInvoiceMonth, invoiceDueThisMonth]);
+
+  function getDueTypeLabel(dueDateValue: string) {
+    const dueDate = new Date(dueDateValue);
+    if (dueDate < currentCalendarMonthWindow.start) {
+      return 'Carry Forward';
+    }
+
+    if (dueDate < currentCalendarMonthWindow.end) {
+      return 'Current Month';
+    }
+
+    if (dueDate < currentCalendarMonthWindow.nextEnd) {
+      return 'Next Month';
+    }
+
+    return 'Future';
+  }
 
   function togglePinnedPanel(panel: PinnedPanelKey) {
     setPinnedPanels((previous) => (previous.includes(panel) ? previous.filter((item) => item !== panel) : [...previous, panel]));
@@ -802,7 +980,7 @@ export function FinancePage() {
   }
 
   function addFeeComponentRow() {
-    setComponents((previous) => [...previous, { feeType: 'Tuition', cadence: 'YEARLY', amount: '' }]);
+    setComponents((previous) => [...previous, { feeType: 'Tuition Fee', cadence: 'YEARLY', amount: '' }]);
   }
 
   function updateFeeComponentRow(index: number, updates: Partial<{ feeType: string; cadence: FeeComponentCadence; amount: string }>) {
@@ -927,6 +1105,7 @@ export function FinancePage() {
           : [];
 
     setInvoiceDueThisMonth(true);
+    setHasTouchedInvoicePreviewDiscountSelection(false);
     setInvoicePreviewSelectedComponentIds(defaultSelectedComponents.length > 0 ? defaultSelectedComponents : selectableComponents);
     setInvoicePreviewSelectedDiscountIds(selectableDiscounts);
     setAssignmentError(null);
@@ -945,6 +1124,7 @@ export function FinancePage() {
   }
 
   function handleToggleInvoicePreviewDiscount(discountId: string, checked: boolean) {
+    setHasTouchedInvoicePreviewDiscountSelection(true);
     setInvoicePreviewSelectedDiscountIds((previous) => {
       if (checked) {
         if (previous.includes(discountId)) return previous;
@@ -980,21 +1160,19 @@ export function FinancePage() {
     setAssignmentError(null);
 
     try {
-      const componentLabels = selectedInvoiceComponents.map((component) => component.feeType.trim()).filter((label) => label.length > 0);
-      const uniqueComponentLabels = Array.from(new Set(componentLabels));
-      const componentSummary =
-        uniqueComponentLabels.length <= 3
-          ? uniqueComponentLabels.join(' + ')
-          : `${uniqueComponentLabels.slice(0, 3).join(' + ')} +${uniqueComponentLabels.length - 3} more`;
-      const fallbackTitle = `${selectedSavedAssignment.billingCycle} Fee Invoice (${componentSummary || 'Selected Components'})`;
+      const invoiceMonth = previewInvoiceDueDate.slice(0, 7);
+      const invoiceSession = deriveAcademicSessionFromMonth(invoiceMonth);
+      const fallbackTitle = `Annual Fee Invoice (${invoiceSession})`;
 
       await createFeeInvoice({
         admissionNo: selectedStudent.admissionNo,
         title: fallbackTitle,
         amount: selectedInvoiceNetAmount,
+        componentBreakdown: selectedInvoiceComponentBreakdown,
         dueDate: previewInvoiceDueDate
       });
-      await loadFinanceData(month);
+      setMonth(invoiceMonth);
+      await loadFinanceData(invoiceMonth);
       setAssignmentMessage('Fee invoice generated successfully.');
       setIsInvoicePreviewOpen(false);
     } catch (saveError) {
@@ -1014,7 +1192,7 @@ export function FinancePage() {
       const skipped = response.summary.skippedReasons;
 
       setAssignmentMessage(
-        `${response.message} Missing school config: ${skipped.missingSchoolConfig}, invalid installment: ${skipped.invalidInstallment}, existing same due-date invoice: ${skipped.existingInvoiceForDueDate}.`
+        `${response.message} Missing school config: ${skipped.missingSchoolConfig}, invalid annual total: ${skipped.invalidInstallment}, existing annual invoice for session: ${skipped.existingInvoiceForDueDate}.`
       );
     } catch (saveError) {
       setAssignmentError(saveError instanceof Error ? saveError.message : 'Failed to generate invoices for eligible students');
@@ -1074,6 +1252,11 @@ export function FinancePage() {
     setPaymentAmount(mode === 'advance' ? '' : String(invoice?.due ?? ''));
     setPaymentMethod('UPI');
     setPaymentFeeType(fallbackFeeType);
+    setSelectedPaymentFeeTypes([fallbackFeeType]);
+    const targetMonth = invoice ? getMonthValueFromDate(invoice.dueDate) : month;
+    setPaymentDate(getTodayDateValue());
+    setPaymentFeeMonth(targetMonth);
+    setPaymentAcademicSession(deriveAcademicSessionFromMonth(targetMonth));
     setPaymentError(null);
     setPaymentMessage(null);
   }
@@ -1082,7 +1265,11 @@ export function FinancePage() {
     setIsPaymentModalOpen(false);
     setActivePaymentInvoiceId(null);
     setPaymentAmount('');
+    setPaymentDate(getTodayDateValue());
+    setPaymentFeeMonth(getCurrentMonthValue());
+    setPaymentAcademicSession(deriveAcademicSessionFromMonth(getCurrentMonthValue()));
     setPaymentModalMode('regular');
+    setSelectedPaymentFeeTypes([]);
   }
 
   function handleOpenPrimaryPaymentModal() {
@@ -1106,36 +1293,61 @@ export function FinancePage() {
   }
 
   function handlePaymentInvoiceChange(invoiceId: string) {
-    setActivePaymentInvoiceId(invoiceId);
-    const selectedInvoice = filteredDueStudents.find((row) => row.id === invoiceId);
+    const normalizedInvoiceId = invoiceId.trim();
+    setActivePaymentInvoiceId(normalizedInvoiceId.length > 0 ? normalizedInvoiceId : null);
+
+    const selectedInvoice = normalizedInvoiceId.length > 0
+      ? filteredDueStudents.find((row) => row.id === normalizedInvoiceId)
+      : undefined;
+
     if (selectedInvoice) {
       setPaymentAmount(paymentModalMode === 'advance' ? '' : String(selectedInvoice.due));
-    }
-  }
-
-  function handlePaymentFeeTypeChange(nextFeeType: string) {
-    setPaymentFeeType(nextFeeType);
-
-    if (!activePaymentInvoice) {
+      const targetMonth = getMonthValueFromDate(selectedInvoice.dueDate);
+      setPaymentFeeMonth(targetMonth);
+      setPaymentAcademicSession(deriveAcademicSessionFromMonth(targetMonth));
       return;
     }
 
-    const selectedFeeBreakdown = paymentFeeBreakdown.find((entry) => entry.feeType === nextFeeType);
-    if (selectedFeeBreakdown) {
-      setPaymentAmount(String(Math.min(activePaymentInvoice.due, selectedFeeBreakdown.suggestedDueShare)));
+    if (paymentModalMode === 'advance') {
+      setPaymentAmount('');
     }
+    setPaymentFeeMonth(month);
+    setPaymentAcademicSession(deriveAcademicSessionFromMonth(month));
+  }
+
+  function handleTogglePaymentFeeType(nextFeeType: string, checked: boolean) {
+    if (checked) {
+      setPaymentFeeType(nextFeeType);
+    }
+
+    setSelectedPaymentFeeTypes((previous) => {
+      if (checked) {
+        if (previous.includes(nextFeeType)) {
+          return previous;
+        }
+        return [...previous, nextFeeType];
+      }
+
+      return previous.filter((item) => item !== nextFeeType);
+    });
+  }
+
+  function handlePaymentFeeMonthChange(nextMonthValue: string) {
+    setPaymentFeeMonth(nextMonthValue);
+    setPaymentAcademicSession(deriveAcademicSessionFromMonth(nextMonthValue));
   }
 
   useEffect(() => {
-    if (!activePaymentInvoice || !paymentFeeType) {
+    if (!activePaymentInvoice || selectedPaymentFeeTypes.length === 0) {
       return;
     }
 
-    const selectedFeeBreakdown = paymentFeeBreakdown.find((entry) => entry.feeType === paymentFeeType);
-    if (selectedFeeBreakdown) {
-      setPaymentAmount(String(Math.min(activePaymentInvoice.due, selectedFeeBreakdown.suggestedDueShare)));
+    const selectedBreakdownRows = paymentFeeBreakdown.filter((entry) => selectedPaymentFeeTypes.includes(entry.feeType));
+    if (selectedBreakdownRows.length > 0) {
+      const remainingAmount = selectedBreakdownRows.reduce((sum, entry) => sum + entry.remainingAmount, 0);
+      setPaymentAmount(String(Math.min(activePaymentInvoice.due, remainingAmount)));
     }
-  }, [activePaymentInvoice, paymentFeeBreakdown, paymentFeeType]);
+  }, [activePaymentInvoice, paymentFeeBreakdown, selectedPaymentFeeTypes]);
 
   async function handleRecordPayment() {
     const invoice = filteredDueStudents.find((row) => row.id === activePaymentInvoiceId);
@@ -1151,15 +1363,56 @@ export function FinancePage() {
       return;
     }
 
+    if (!paymentDate || !paymentFeeMonth) {
+      setPaymentError('Select payment date and fee month before saving.');
+      return;
+    }
+
+    if (selectedPaymentFeeTypes.length === 0) {
+      setPaymentError('Select at least one fee type before saving.');
+      return;
+    }
+
+    const selectedBreakdownRows = paymentFeeBreakdown.filter((entry) => selectedPaymentFeeTypes.includes(entry.feeType));
+    const selectedRemainingAmount = selectedBreakdownRows.reduce((sum, entry) => sum + entry.remainingAmount, 0);
+
+    if (selectedBreakdownRows.length > 0 && typedAmount - selectedRemainingAmount > 0.009) {
+      setPaymentError('Payment amount exceeds the remaining due for the selected fee type(s).');
+      return;
+    }
+
     setPaymentSaving(true);
     setPaymentMessage(null);
     setPaymentError(null);
 
     try {
+      let remainingAllocationAmount = typedAmount;
+      const feeTypeAllocations = selectedBreakdownRows.length > 0
+        ? selectedBreakdownRows
+            .map((entry) => {
+              const allocationAmount = Math.min(entry.remainingAmount, remainingAllocationAmount);
+              remainingAllocationAmount -= allocationAmount;
+              return {
+                feeType: entry.feeType,
+                amount: allocationAmount
+              };
+            })
+            .filter((entry) => entry.amount > 0.009)
+        : selectedPaymentFeeTypes.map((feeType, index) => ({
+            feeType,
+            amount: index === 0 ? typedAmount : 0
+          })).filter((entry) => entry.amount > 0.009);
+
+      const combinedFeeTypeLabel = feeTypeAllocations.map((entry) => entry.feeType).join(', ');
+
       await payFeeInvoiceAsAdmin(invoice.id, {
         amount: typedAmount,
         paymentMethod,
-        feeType: paymentFeeType
+        feeType: combinedFeeTypeLabel || paymentFeeType.trim() || undefined,
+        feeTypeAllocations,
+        paymentDate,
+        feeMonth: paymentFeeMonth,
+        academicSession: paymentAcademicSession.trim() || undefined
       });
 
       await loadFinanceData(month);
@@ -1184,15 +1437,31 @@ export function FinancePage() {
       return;
     }
 
+    if (!paymentDate || !paymentFeeMonth) {
+      setPaymentError('Select payment date and fee month before saving.');
+      return;
+    }
+
     setPaymentSaving(true);
     setPaymentMessage(null);
     setPaymentError(null);
 
     try {
+      const combinedFeeTypeLabel = Array.from(
+        new Set(
+          selectedPaymentFeeTypes
+            .map((item) => item.trim())
+            .filter((item) => item.length > 0)
+        )
+      ).join(', ');
+
       const response = await recordStudentAdvancePaymentAsAdmin(selectedStudent.id, {
         amount: typedAmount,
         paymentMethod,
-        feeType: paymentFeeType,
+        feeType: combinedFeeTypeLabel || paymentFeeType.trim() || undefined,
+        paymentDate,
+        feeMonth: paymentFeeMonth,
+        academicSession: paymentAcademicSession.trim() || undefined,
         sourceInvoiceId:
           typeof activePaymentInvoiceId === 'string' && activePaymentInvoiceId.trim().length > 0
             ? activePaymentInvoiceId
@@ -1210,7 +1479,11 @@ export function FinancePage() {
   }
 
   async function handleDeleteDue(invoiceId: string) {
-    const shouldDelete = window.confirm('Are you sure you want to delete this due record?');
+    const invoice = filteredDueStudents.find((row) => row.id === invoiceId);
+    const invoiceSummary = invoice
+      ? `${invoice.title} | ${new Date(invoice.dueDate).toLocaleDateString()} | ${formatCurrency(invoice.due)}`
+      : 'Selected due record';
+    const shouldDelete = window.confirm(`Delete only this invoice?\n${invoiceSummary}`);
     if (!shouldDelete) return;
 
     setDeletingInvoiceId(invoiceId);
@@ -1494,49 +1767,61 @@ export function FinancePage() {
               <div className="space-y-3">
                 {components.length === 0 ? <p className="text-sm text-slate-500">No fee components added yet.</p> : null}
                 <div className="space-y-2">
-                  {components.map((component, index) => (
-                    <div key={`${component.feeType}-${component.cadence}-${index}`} className="grid grid-cols-1 gap-2 md:grid-cols-12">
-                      <select
-                        className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white md:col-span-4"
-                        value={component.feeType}
-                        onChange={(event) => updateFeeComponentRow(index, { feeType: event.target.value })}
-                      >
-                        {feeTypeOptions.map((option) => (
-                          <option key={option} value={option}>
-                            {option}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white md:col-span-3"
-                        value={component.cadence}
-                        onChange={(event) => updateFeeComponentRow(index, { cadence: event.target.value as FeeComponentCadence })}
-                      >
-                        <option value="YEARLY">Yearly</option>
-                        <option value="MONTHLY">Monthly</option>
-                        <option value="ONCE">Once</option>
-                      </select>
-                      <div className="flex items-center rounded-md border border-slate-200/80 bg-slate-50/50 px-3 transition-colors focus-within:border-brand-sky focus-within:bg-white md:col-span-3">
-                        <span className="mr-2 text-sm text-slate-500">₹</span>
-                        <input
-                          className="w-full py-2 text-sm outline-none"
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          placeholder="Enter amount"
-                          value={component.amount}
-                          onChange={(event) => updateFeeComponentRow(index, { amount: event.target.value })}
-                        />
+                  {components.map((component, index) => {
+                    const oneTimeOnly = isOneTimeFeeType(component.feeType);
+
+                    return (
+                      <div key={`${component.feeType}-${component.cadence}-${index}`} className="grid grid-cols-1 gap-2 md:grid-cols-12">
+                        <select
+                          className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white md:col-span-4"
+                          value={component.feeType}
+                          onChange={(event) => {
+                            const nextFeeType = event.target.value;
+                            updateFeeComponentRow(index, {
+                              feeType: nextFeeType,
+                              cadence: isOneTimeFeeType(nextFeeType) ? 'ONCE' : component.cadence
+                            });
+                          }}
+                        >
+                          {feeTypeOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white md:col-span-3"
+                          value={component.cadence}
+                          onChange={(event) => updateFeeComponentRow(index, { cadence: event.target.value as FeeComponentCadence })}
+                          disabled={oneTimeOnly}
+                          title={oneTimeOnly ? 'Admission Fee is always one-time.' : undefined}
+                        >
+                          <option value="YEARLY">Yearly</option>
+                          <option value="MONTHLY">Monthly</option>
+                          <option value="ONCE">Once</option>
+                        </select>
+                        <div className="flex items-center rounded-md border border-slate-200/80 bg-slate-50/50 px-3 transition-colors focus-within:border-brand-sky focus-within:bg-white md:col-span-3">
+                          <span className="mr-2 text-sm text-slate-500">₹</span>
+                          <input
+                            className="w-full py-2 text-sm outline-none"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder="Enter amount"
+                            value={component.amount}
+                            onChange={(event) => updateFeeComponentRow(index, { amount: event.target.value })}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeFeeComponentRow(index)}
+                          className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 md:col-span-2"
+                        >
+                          Remove
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => removeFeeComponentRow(index)}
-                        className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 md:col-span-2"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
                 <button
                   type="button"
@@ -1608,7 +1893,7 @@ export function FinancePage() {
                   <option value="QUARTERLY">Quarterly</option>
                   <option value="YEARLY">Yearly</option>
                 </select>
-                <div className="rounded-md border border-brand-orange/40 bg-brand-orange/5 px-3 py-2 text-sm">Selected Month Invoice Payable: <span className="font-semibold text-brand-navy">{formatCurrency(selectedMonthInvoicePayable)}</span></div>
+                <div className="rounded-md border border-brand-orange/40 bg-brand-orange/5 px-3 py-2 text-sm">Selected Annual Invoice Payable: <span className="font-semibold text-brand-navy">{formatCurrency(selectedMonthInvoicePayable)}</span></div>
               </div>
 
               <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
@@ -1644,22 +1929,7 @@ export function FinancePage() {
 
               <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3">
                 <h5 className="font-semibold text-brand-navy">Selected Student Pending Invoices</h5>
-                <p className="mt-1 text-xs text-slate-500">Previous dues and upcoming dues are shown here for quick admin visibility.</p>
-
-                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
-                  <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-                    <p className="text-xs text-slate-500">Previous Due Outstanding</p>
-                    <p className="text-base font-semibold text-brand-navy">{formatCurrency(carryForwardDueTotal)}</p>
-                  </div>
-                  <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-                    <p className="text-xs text-slate-500">Current Month Due</p>
-                    <p className="text-base font-semibold text-brand-navy">{formatCurrency(currentMonthDueTotal)}</p>
-                  </div>
-                  <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-                    <p className="text-xs text-slate-500">Next Month Due ({nextMonthLabel})</p>
-                    <p className="text-base font-semibold text-brand-navy">{formatCurrency(effectiveNextMonthDue)}</p>
-                  </div>
-                </div>
+                <p className="mt-1 text-xs text-slate-500">Outstanding invoices are listed directly below so payments can be recorded against the exact invoice items that were generated.</p>
 
                 <div className="mt-3 max-h-56 overflow-auto rounded-md border border-slate-200/80 bg-white">
                   <table className="min-w-full border-collapse text-left text-xs">
@@ -1673,20 +1943,13 @@ export function FinancePage() {
                     </thead>
                     <tbody>
                       {filteredDueStudents.map((invoice) => {
-                        const dueDate = new Date(invoice.dueDate);
-                        const dueType = dueDate < selectedMonthWindow.start
-                          ? 'Previous Due'
-                          : dueDate < selectedMonthWindow.end
-                            ? 'Current Month'
-                            : dueDate < nextMonthWindow.end
-                              ? 'Next Month'
-                              : 'Future';
+                        const dueType = getDueTypeLabel(invoice.dueDate);
 
                         return (
                           <tr key={`pending-invoice-${invoice.id}`} className="border-b border-slate-100">
                             <td className="px-3 py-2 text-slate-700">{invoice.title}</td>
                             <td className="px-3 py-2 font-semibold text-brand-navy">{formatCurrency(invoice.due)}</td>
-                            <td className="px-3 py-2 text-slate-600">{dueDate.toLocaleDateString()}</td>
+                            <td className="px-3 py-2 text-slate-600">{new Date(invoice.dueDate).toLocaleDateString()}</td>
                             <td className="px-3 py-2 text-slate-600">{dueType}</td>
                           </tr>
                         );
@@ -1728,24 +1991,6 @@ export function FinancePage() {
             isOpen={activeAccordionPanel === 'dues'}
             onToggle={() => setActiveAccordionPanel((previous) => (previous === 'dues' ? null : 'dues'))}
           >
-        <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-          <article className="rounded-lg border border-slate-200/80 border-l-4 border-l-amber-400 bg-slate-50/50 p-3">
-            <p className="text-xs text-slate-500">Carry-Forward Due (Previous Months)</p>
-            <p className="mt-1 text-lg font-semibold text-brand-navy">{formatCurrency(carryForwardDueTotal)}</p>
-            <p className="text-xs text-slate-500">{carryForwardDueStudents.length} invoice(s)</p>
-          </article>
-          <article className="rounded-lg border border-slate-200/80 border-l-4 border-l-sky-400 bg-slate-50/50 p-3">
-            <p className="text-xs text-slate-500">Current Month Due ({month})</p>
-            <p className="mt-1 text-lg font-semibold text-brand-navy">{formatCurrency(currentMonthDueTotal)}</p>
-            <p className="text-xs text-slate-500">{currentMonthDueStudents.length} invoice(s)</p>
-          </article>
-          <article className="rounded-lg border border-slate-200/80 border-l-4 border-l-red-400 bg-slate-50/50 p-3">
-            <p className="text-xs text-slate-500">Next Month Payable Preview ({nextMonthLabel})</p>
-            <p className="mt-1 text-lg font-semibold text-brand-navy">{formatCurrency(projectedNextMonthPayable)}</p>
-            <p className="text-xs text-slate-500">Carry-forward {formatCurrency(carryForwardDueTotal)} + next-month due {formatCurrency(effectiveNextMonthDue)}</p>
-          </article>
-        </div>
-
         <div className="max-h-64 overflow-auto">
           <table className="min-w-full border-collapse text-left text-sm">
             <thead>
@@ -1761,50 +2006,58 @@ export function FinancePage() {
               </tr>
             </thead>
             <tbody>
-              {filteredDueStudents.map((invoice) => (
-                <tr key={invoice.id} className="border-b border-slate-100 table-row-hover">
-                  <td className="px-4 py-3">{invoice.student.admissionNo}</td>
-                  <td className="px-4 py-3">{invoice.student.name}</td>
-                  <td className="px-4 py-3">{invoice.student.className} / {invoice.student.section}</td>
-                  <td className="px-4 py-3">{invoice.title}</td>
-                  <td className="px-4 py-3 font-semibold text-brand-navy">{formatCurrency(invoice.due)}</td>
-                  <td className="px-4 py-3">{new Date(invoice.dueDate).toLocaleDateString()}</td>
-                  <td className="px-4 py-3">
-                    {new Date(invoice.dueDate) < selectedMonthWindow.start ? (
-                      <span className="rounded-full border border-brand-orange/40 bg-brand-orange/10 px-2 py-0.5 text-xs font-semibold text-brand-navy">Carry Forward</span>
-                    ) : (
-                      <span className="rounded-full border border-brand-sky/40 bg-brand-sky/10 px-2 py-0.5 text-xs font-semibold text-brand-navy">Current Month</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => openRecordPayment(invoice.id, 'regular')}
-                        className="rounded-md bg-brand-navy px-2 py-1 text-xs font-semibold text-white shadow-sm hover:bg-brand-navy/90 disabled:opacity-60"
-                      >
-                        Record Payment
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openRecordPayment(invoice.id, 'advance')}
-                        className="rounded-md border border-brand-navy/30 px-2 py-1 text-xs font-semibold text-brand-navy hover:bg-brand-navy/5 disabled:opacity-60"
-                      >
-                        Record Advance
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteDue(invoice.id)}
-                        disabled={deletingInvoiceId === invoice.id}
-                        className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
-                        aria-label="Delete due"
-                      >
-                        {deletingInvoiceId === invoice.id ? '...' : 'X'}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {filteredDueStudents.map((invoice) => {
+                const dueType = getDueTypeLabel(invoice.dueDate);
+                const dueTypeClassName =
+                  dueType === 'Carry Forward'
+                    ? 'border-brand-orange/40 bg-brand-orange/10'
+                    : dueType === 'Current Month'
+                      ? 'border-brand-sky/40 bg-brand-sky/10'
+                      : dueType === 'Next Month'
+                        ? 'border-emerald-300/50 bg-emerald-50'
+                        : 'border-slate-300/60 bg-slate-100/70';
+
+                return (
+                  <tr key={invoice.id} className="border-b border-slate-100 table-row-hover">
+                    <td className="px-4 py-3">{invoice.student.admissionNo}</td>
+                    <td className="px-4 py-3">{invoice.student.name}</td>
+                    <td className="px-4 py-3">{invoice.student.className} / {invoice.student.section}</td>
+                    <td className="px-4 py-3">{invoice.title}</td>
+                    <td className="px-4 py-3 font-semibold text-brand-navy">{formatCurrency(invoice.due)}</td>
+                    <td className="px-4 py-3">{new Date(invoice.dueDate).toLocaleDateString()}</td>
+                    <td className="px-4 py-3">
+                      <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold text-brand-navy ${dueTypeClassName}`}>{dueType}</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openRecordPayment(invoice.id, 'regular')}
+                          className="rounded-md bg-brand-navy px-2 py-1 text-xs font-semibold text-white shadow-sm hover:bg-brand-navy/90 disabled:opacity-60"
+                        >
+                          Record Payment
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openRecordPayment(invoice.id, 'advance')}
+                          className="rounded-md border border-brand-navy/30 px-2 py-1 text-xs font-semibold text-brand-navy hover:bg-brand-navy/5 disabled:opacity-60"
+                        >
+                          Record Advance
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDue(invoice.id)}
+                          disabled={deletingInvoiceId === invoice.id}
+                          className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
+                          aria-label="Delete due"
+                        >
+                          {deletingInvoiceId === invoice.id ? '...' : 'X'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {!financeLoading && filteredDueStudents.length === 0 ? <p className="pt-3 text-sm text-slate-500">No pending student dues for selected month context.</p> : null}
@@ -1831,7 +2084,9 @@ export function FinancePage() {
           <table className="min-w-full border-collapse text-left text-sm">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50/80">
-                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Date</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Paid On</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Fee Month</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Session</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Mode</th>
@@ -1843,7 +2098,12 @@ export function FinancePage() {
             <tbody>
               {filteredTransactions.map((transaction) => (
                 <tr key={transaction.id} className="border-b border-slate-100 table-row-hover">
-                  <td className="px-4 py-3">{new Date(transaction.createdAt).toLocaleString()}</td>
+                  <td className="px-4 py-3">
+                    <p>{new Date(transaction.paymentDate).toLocaleDateString()}</p>
+                    <p className="text-xs text-slate-400">Logged: {new Date(transaction.createdAt).toLocaleString()}</p>
+                  </td>
+                  <td className="px-4 py-3">{transaction.feeMonth ?? '-'}</td>
+                  <td className="px-4 py-3">{transaction.academicSession ?? '-'}</td>
                   <td className="px-4 py-3">{transaction.invoice.title}</td>
                   <td className="px-4 py-3">
                     {(transaction.feeType ?? '').toLowerCase().includes('advance applied')
@@ -1946,7 +2206,7 @@ export function FinancePage() {
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h4 className="text-lg font-semibold text-brand-navy">Invoice Preview</h4>
-                <p className="text-xs text-slate-500">Review invoice details and monthly fee breakdown before generation.</p>
+                <p className="text-xs text-slate-500">Review invoice details and annual fee breakdown before generation.</p>
               </div>
               <button
                 type="button"
@@ -1969,13 +2229,13 @@ export function FinancePage() {
                   Class/Section: <span className="font-semibold text-brand-navy">{selectedStudent.className}/{selectedStudent.section}</span>
                 </p>
                 <p>
-                  Invoice Title: <span className="font-semibold text-brand-navy">{selectedSavedAssignment.billingCycle} Fee Invoice</span>
+                  Invoice Title: <span className="font-semibold text-brand-navy">Annual Fee Invoice ({deriveAcademicSessionFromMonth(previewInvoiceDueDate.slice(0, 7))})</span>
                 </p>
                 <p>
-                  Billing Cycle: <span className="font-semibold text-brand-navy">{invoicePreviewInstallmentLabel}</span>
+                  Billing Cycle: <span className="font-semibold text-brand-navy">{selectedSavedAssignment.billingCycle}</span>
                 </p>
                 <p>
-                  Selected Invoice Amount: <span className="font-semibold text-brand-navy">{formatCurrency(selectedInvoiceNetAmount)}</span>
+                  Selected Annual Invoice Amount: <span className="font-semibold text-brand-navy">{formatCurrency(selectedInvoiceNetAmount)}</span>
                 </p>
               </div>
               <div className="mt-3 rounded-md border border-slate-200/80 bg-white px-3 py-2 text-xs text-slate-600">
@@ -2157,24 +2417,68 @@ export function FinancePage() {
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="md:col-span-2">
-                <p className="mb-1 text-xs text-slate-500">{paymentModalMode === 'advance' ? 'Start With Due Invoice (Optional)' : 'Due Invoice'}</p>
-                <select
-                  className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
-                  value={activePaymentInvoiceId ?? ''}
-                  onChange={(event) => handlePaymentInvoiceChange(event.target.value)}
-                >
-                  {paymentModalMode === 'advance' ? <option value="">No specific due selected</option> : null}
-                  {filteredDueStudents.map((invoice) => (
-                    <option key={invoice.id} value={invoice.id}>
-                      {invoice.student.admissionNo} - {invoice.student.name} - {invoice.title} ({formatCurrency(invoice.due)})
-                    </option>
-                  ))}
-                </select>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <p className="text-xs text-slate-500">{paymentModalMode === 'advance' ? 'Start With Due Invoice (Optional)' : 'Select Due Invoice'}</p>
+                  {paymentModalMode === 'advance' ? (
+                    <button
+                      type="button"
+                      onClick={() => handlePaymentInvoiceChange('')}
+                      className="rounded-md border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+                    >
+                      No specific due
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="max-h-44 overflow-auto rounded-md border border-slate-200/80 bg-white">
+                  <table className="min-w-full border-collapse text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-100 bg-slate-50/80">
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Select</th>
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due</th>
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due Date</th>
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Type</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredDueStudents.map((invoice) => {
+                        const selected = invoice.id === activePaymentInvoiceId;
+                        const dueType = getDueTypeLabel(invoice.dueDate);
+
+                        return (
+                          <tr
+                            key={`payment-invoice-row-${invoice.id}`}
+                            className={`cursor-pointer border-b border-slate-100 ${selected ? 'bg-brand-sky/10' : 'hover:bg-slate-50'}`}
+                            onClick={() => handlePaymentInvoiceChange(invoice.id)}
+                          >
+                            <td className="px-3 py-2">
+                              <input
+                                type="radio"
+                                name="payment-invoice"
+                                checked={selected}
+                                onChange={() => handlePaymentInvoiceChange(invoice.id)}
+                                className="h-4 w-4 border-slate-300 text-brand-navy focus:ring-brand-sky"
+                              />
+                            </td>
+                            <td className="px-3 py-2 text-slate-700">{invoice.title}</td>
+                            <td className="px-3 py-2 font-semibold text-brand-navy">{formatCurrency(invoice.due)}</td>
+                            <td className="px-3 py-2 text-slate-600">{new Date(invoice.dueDate).toLocaleDateString()}</td>
+                            <td className="px-3 py-2 text-slate-600">{dueType}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {filteredDueStudents.length === 0 ? (
+                    <p className="px-3 py-2 text-xs text-slate-500">No due invoices found for this student.</p>
+                  ) : null}
+                </div>
               </div>
 
               <div className="md:col-span-2 rounded-md border border-slate-200/80 bg-slate-50/50 p-3">
                 <div className="mb-2 flex items-center justify-between">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Fee Structure Payable</p>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Invoice Due Snapshot</p>
                   <p className="text-xs text-slate-500">Invoice Due: <span className="font-semibold text-brand-navy">{formatCurrency(activePaymentInvoice?.due ?? 0)}</span></p>
                 </div>
 
@@ -2188,18 +2492,18 @@ export function FinancePage() {
                       <thead>
                         <tr className="border-b border-slate-100 bg-slate-50/80">
                           <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
-                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Monthly Payable</th>
-                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Installment Payable</th>
-                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due Share</th>
+                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice Fee Amount</th>
+                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Paid</th>
+                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due</th>
                         </tr>
                       </thead>
                       <tbody>
                         {paymentFeeBreakdown.map((entry) => (
                           <tr key={`payment-breakdown-${entry.feeType}`} className="border-b border-slate-100">
                             <td className="px-3 py-2 text-slate-700">{entry.feeType}</td>
-                            <td className="px-3 py-2 text-slate-600">{formatCurrency(entry.monthlyPayable)}</td>
                             <td className="px-3 py-2 text-slate-600">{formatCurrency(entry.installmentPayable)}</td>
-                            <td className="px-3 py-2 font-semibold text-brand-navy">{formatCurrency(entry.suggestedDueShare)}</td>
+                            <td className="px-3 py-2 text-slate-600">{formatCurrency(entry.paidAmount)}</td>
+                            <td className="px-3 py-2 font-semibold text-brand-navy">{formatCurrency(entry.remainingAmount)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -2216,15 +2520,60 @@ export function FinancePage() {
                 </select>
               </div>
 
+              <div className="md:col-span-2">
+                <p className="mb-1 text-xs text-slate-500">Fee Types Paid</p>
+                <div className="max-h-40 overflow-auto rounded-md border border-slate-200/80 bg-slate-50/50 p-2">
+                  {paymentFeeTypeOptions.map((option) => {
+                    const breakdownEntry = paymentFeeBreakdown.find((entry) => entry.feeType === option);
+
+                    return (
+                      <label key={`payment-fee-type-${option}`} className="mb-1 flex cursor-pointer items-center justify-between gap-3 rounded-md border border-transparent bg-white px-3 py-2 text-sm hover:border-brand-sky/40 last:mb-0">
+                        <span className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedPaymentFeeTypes.includes(option)}
+                            onChange={(event) => handleTogglePaymentFeeType(option, event.target.checked)}
+                            className="h-4 w-4 rounded border-slate-300 text-brand-navy focus:ring-brand-sky"
+                          />
+                          <span className="text-slate-700">{option}</span>
+                        </span>
+                        {breakdownEntry ? <span className="text-xs font-semibold text-brand-navy">Remaining: {formatCurrency(breakdownEntry.remainingAmount)}</span> : null}
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="mt-1 text-xs text-slate-500">Only the selected fee type(s) will be cleared. Remaining balances stay attached to their own fee types.</p>
+              </div>
+
               <div>
-                <p className="mb-1 text-xs text-slate-500">Fee Type</p>
-                <select className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white" value={paymentFeeType} onChange={(event) => handlePaymentFeeTypeChange(event.target.value)}>
-                  {paymentFeeTypeOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
+                <p className="mb-1 text-xs text-slate-500">Payment Date</p>
+                <input
+                  className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
+                  type="date"
+                  value={paymentDate}
+                  onChange={(event) => setPaymentDate(event.target.value)}
+                />
+              </div>
+
+              <div>
+                <p className="mb-1 text-xs text-slate-500">Fee Belongs To Month</p>
+                <input
+                  className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
+                  type="month"
+                  value={paymentFeeMonth}
+                  onChange={(event) => handlePaymentFeeMonthChange(event.target.value)}
+                />
+              </div>
+
+              <div>
+                <p className="mb-1 text-xs text-slate-500">Academic Session</p>
+                <input
+                  className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
+                  type="text"
+                  placeholder="e.g. 2025-26"
+                  value={paymentAcademicSession}
+                  onChange={(event) => setPaymentAcademicSession(event.target.value)}
+                />
               </div>
 
               <div className="md:col-span-2">
