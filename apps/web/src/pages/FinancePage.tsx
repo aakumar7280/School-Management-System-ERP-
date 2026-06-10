@@ -78,7 +78,7 @@ function deriveAcademicSessionFromMonth(monthValue: string) {
 function cadenceLabel(cadence: FeeComponentCadence) {
   if (cadence === 'MONTHLY') return 'Monthly';
   if (cadence === 'YEARLY') return 'Yearly';
-  return 'Once';
+  return 'Once in lifetime';
 }
 
 function isAnnualFeeInvoiceTitle(title: string) {
@@ -86,7 +86,8 @@ function isAnnualFeeInvoiceTitle(title: string) {
 }
 
 function isOneTimeFeeType(feeType: string) {
-  return feeType.trim().toLowerCase() === 'admission fee';
+  const normalized = feeType.trim().toLowerCase();
+  return normalized === 'admission fee' || normalized === 'tc fee';
 }
 
 function isAdvanceTransactionFeeType(feeType: string | null | undefined) {
@@ -99,6 +100,10 @@ function extractFeeTypeParts(feeType: string | null | undefined) {
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+}
+
+function normalizeFeeTypeKey(feeType: string) {
+  return feeType.trim().toLowerCase();
 }
 
 interface CollapsiblePanelProps {
@@ -165,12 +170,14 @@ export function FinancePage() {
 
   const [activePaymentInvoiceId, setActivePaymentInvoiceId] = useState<string | null>(null);
   const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<'UPI' | 'CASH'>('UPI');
-  const [paymentFeeType, setPaymentFeeType] = useState('Tuition Fee');
+  const [paymentMethod, setPaymentMethod] = useState<'UPI' | 'CASH' | 'CHEQUE'>('UPI');
+  const [paymentFeeType, setPaymentFeeType] = useState('');
   const [selectedPaymentFeeTypes, setSelectedPaymentFeeTypes] = useState<string[]>([]);
   const [paymentDate, setPaymentDate] = useState(() => getTodayDateValue());
   const [paymentFeeMonth, setPaymentFeeMonth] = useState(() => getCurrentMonthValue());
   const [paymentAcademicSession, setPaymentAcademicSession] = useState(() => deriveAcademicSessionFromMonth(getCurrentMonthValue()));
+  const [paymentTransactionId, setPaymentTransactionId] = useState('');
+  const [paymentCheckNumber, setPaymentCheckNumber] = useState('');
   const [paymentSaving, setPaymentSaving] = useState(false);
   const [paymentModalMode, setPaymentModalMode] = useState<'regular' | 'advance'>('regular');
   const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
@@ -190,6 +197,7 @@ export function FinancePage() {
     'Tuition Fee',
     'Transport Fee',
     'Admission Fee',
+    'TC Fee',
     'Meals',
     'Uniform',
     'Sports',
@@ -388,21 +396,90 @@ export function FinancePage() {
       .sort((left, right) => right.remainingAmount - left.remainingAmount);
   }, [activePaymentInvoice, filteredTransactions]);
 
+  const configuredCadenceByFeeType = useMemo(() => {
+    const cadenceByFeeType = new Map<string, FeeComponentCadence>();
+    (selectedSavedAssignment?.components ?? []).forEach((component) => {
+      const key = normalizeFeeTypeKey(component.feeType);
+      if (!key) {
+        return;
+      }
+
+      cadenceByFeeType.set(key, component.cadence as FeeComponentCadence);
+    });
+
+    return cadenceByFeeType;
+  }, [selectedSavedAssignment]);
+
+  const paidAmountByFeeType = useMemo(() => {
+    const totals = new Map<string, number>();
+
+    filteredTransactions.forEach((transaction) => {
+      if (isAdvanceTransactionFeeType(transaction.feeType)) {
+        return;
+      }
+
+      const feeTypeParts = extractFeeTypeParts(transaction.feeType);
+      if (feeTypeParts.length === 0) {
+        return;
+      }
+
+      const splitAmount = transaction.amount / feeTypeParts.length;
+      feeTypeParts.forEach((feeTypePart) => {
+        const key = normalizeFeeTypeKey(feeTypePart);
+        totals.set(key, (totals.get(key) ?? 0) + splitAmount);
+      });
+    });
+
+    return totals;
+  }, [filteredTransactions]);
+
+  const blockedPaidNonMonthlyFeeTypeSet = useMemo(() => {
+    const blocked = new Set<string>();
+
+    configuredCadenceByFeeType.forEach((cadence, feeTypeKey) => {
+      if (cadence === 'MONTHLY') {
+        return;
+      }
+
+      const paidAmount = paidAmountByFeeType.get(feeTypeKey) ?? 0;
+      if (paidAmount > 0.009) {
+        blocked.add(feeTypeKey);
+      }
+    });
+
+    return blocked;
+  }, [configuredCadenceByFeeType, paidAmountByFeeType]);
+
   const paymentFeeTypeOptions = useMemo(() => {
+    const filterBlockedFeeTypes = (items: string[]) =>
+      items.filter((item) => item.trim().length > 0 && !blockedPaidNonMonthlyFeeTypeSet.has(normalizeFeeTypeKey(item)));
+
     if (paymentFeeBreakdown.length > 0) {
-      return Array.from(new Set(paymentFeeBreakdown.map((item) => item.feeType))).filter((item) => item.trim().length > 0);
+      return filterBlockedFeeTypes(Array.from(new Set(paymentFeeBreakdown.map((item) => item.feeType))));
     }
 
     if (activePaymentInvoice) {
+      const invoiceSnapshotFeeTypes = (activePaymentInvoice.componentBreakdown ?? []).map((entry) => entry.feeType);
       const existingInvoiceFeeTypes = filteredTransactions
         .filter((transaction) => transaction.invoice.id === activePaymentInvoice.id)
         .flatMap((transaction) => extractFeeTypeParts(transaction.feeType));
 
-      return Array.from(new Set([...selectedPaymentFeeTypes, paymentFeeType, ...existingInvoiceFeeTypes])).filter((item) => item.trim().length > 0);
+      const preferred = filterBlockedFeeTypes(Array.from(new Set([...selectedPaymentFeeTypes, paymentFeeType, ...invoiceSnapshotFeeTypes, ...existingInvoiceFeeTypes])));
+      if (preferred.length > 0) {
+        return preferred;
+      }
+
+      const assignmentFeeTypes = selectedSavedAssignment?.components.map((component) => component.feeType) ?? [];
+      const fallbackFromAssignment = filterBlockedFeeTypes(Array.from(new Set(assignmentFeeTypes)));
+      if (fallbackFromAssignment.length > 0) {
+        return fallbackFromAssignment;
+      }
+
+      return filterBlockedFeeTypes(Array.from(new Set(feeTypeOptions)));
     }
 
-    return Array.from(new Set([...selectedPaymentFeeTypes, paymentFeeType, ...feeTypeOptions])).filter((item) => item.trim().length > 0);
-  }, [activePaymentInvoice, feeTypeOptions, filteredTransactions, paymentFeeBreakdown, paymentFeeType, selectedPaymentFeeTypes]);
+    return filterBlockedFeeTypes(Array.from(new Set([...selectedPaymentFeeTypes, paymentFeeType, ...feeTypeOptions])));
+  }, [activePaymentInvoice, blockedPaidNonMonthlyFeeTypeSet, feeTypeOptions, filteredTransactions, paymentFeeBreakdown, paymentFeeType, selectedPaymentFeeTypes, selectedSavedAssignment]);
 
   useEffect(() => {
     if (paymentFeeTypeOptions.length === 0) {
@@ -479,6 +556,54 @@ export function FinancePage() {
 
   const finalTotal = useMemo(() => Math.max(subtotal - computedDiscountAmount, 0), [subtotal, computedDiscountAmount]);
 
+  const summaryFeeTypeRows = useMemo(() => {
+    const totalByFeeType = new Map<string, { feeType: string; annualizedTotal: number; cadence: FeeComponentCadence }>();
+
+    components.forEach((component) => {
+      const key = normalizeFeeTypeKey(component.feeType);
+      if (!key) {
+        return;
+      }
+
+      const baseAmount = Number(component.amount || 0);
+      if (!Number.isFinite(baseAmount) || baseAmount <= 0) {
+        return;
+      }
+
+      const annualizedAmount = component.cadence === 'MONTHLY' ? baseAmount * 12 : baseAmount;
+      const existing = totalByFeeType.get(key);
+
+      if (existing) {
+        totalByFeeType.set(key, {
+          ...existing,
+          annualizedTotal: existing.annualizedTotal + annualizedAmount
+        });
+        return;
+      }
+
+      totalByFeeType.set(key, {
+        feeType: component.feeType,
+        annualizedTotal: annualizedAmount,
+        cadence: component.cadence
+      });
+    });
+
+    return Array.from(totalByFeeType.entries())
+      .map(([key, entry]) => {
+        const paidAmount = paidAmountByFeeType.get(key) ?? 0;
+        const clampedPaidAmount = Math.min(paidAmount, entry.annualizedTotal);
+
+        return {
+          feeType: entry.feeType,
+          cadence: entry.cadence,
+          annualizedTotal: entry.annualizedTotal,
+          paidAmount: clampedPaidAmount,
+          remainingAmount: Math.max(entry.annualizedTotal - clampedPaidAmount, 0)
+        };
+      })
+      .sort((left, right) => right.annualizedTotal - left.annualizedTotal);
+  }, [components, paidAmountByFeeType]);
+
   const previewSelectedCurrentMonthPayable = useMemo(() => {
     if (!selectedSavedAssignment) {
       return 0;
@@ -497,7 +622,7 @@ export function FinancePage() {
       })
       .filter((component) => Number.isFinite(component.cyclePayable) && component.cyclePayable > 0);
 
-    const defaultComponentIds = components.filter((component) => component.cadence !== 'ONCE').map((component) => component.id);
+    const defaultComponentIds = components.map((component) => component.id);
     const fallbackComponentIds = components.map((component) => component.id);
     const effectiveComponentIds =
       invoicePreviewSelectedComponentIds.length > 0
@@ -663,6 +788,11 @@ export function FinancePage() {
     return 'Annual';
   }, []);
 
+  const selectedComponentFeeTypes = useMemo(
+    () => components.map((component) => component.feeType.trim().toLowerCase()).filter((feeType) => feeType.length > 0),
+    [components]
+  );
+
   const previewInvoiceMonth = useMemo(
     () => (invoiceDueThisMonth ? currentInvoiceMonth : getNextMonthValue(currentInvoiceMonth)),
     [currentInvoiceMonth, invoiceDueThisMonth]
@@ -745,10 +875,7 @@ export function FinancePage() {
   }, [selectedSavedAssignment]);
 
   const defaultInvoicePreviewComponentIds = useMemo(
-    () =>
-      invoicePreviewComponents
-        .filter((component) => component.cyclePayable > 0 && component.cadence !== 'ONCE')
-        .map((component) => component.id),
+    () => invoicePreviewComponents.filter((component) => component.cyclePayable > 0).map((component) => component.id),
     [invoicePreviewComponents]
   );
 
@@ -827,6 +954,7 @@ export function FinancePage() {
 
     return Array.from(groupedAmounts.entries()).map(([feeType, amount]) => ({
       feeType,
+      cadence: selectedInvoiceComponents.find((component) => component.feeType === feeType)?.cadence ?? null,
       amount: Number(amount.toFixed(2))
     }));
   }, [selectedInvoiceComponentSubtotal, selectedInvoiceComponents, selectedInvoiceDiscountAmount, selectedInvoiceNetAmount]);
@@ -980,7 +1108,7 @@ export function FinancePage() {
   }
 
   function addFeeComponentRow() {
-    setComponents((previous) => [...previous, { feeType: 'Tuition Fee', cadence: 'YEARLY', amount: '' }]);
+    setComponents((previous) => [...previous, { feeType: '', cadence: 'YEARLY', amount: '' }]);
   }
 
   function updateFeeComponentRow(index: number, updates: Partial<{ feeType: string; cadence: FeeComponentCadence; amount: string }>) {
@@ -1243,20 +1371,19 @@ export function FinancePage() {
     const invoice = invoiceId ? filteredDueStudents.find((row) => row.id === invoiceId) ?? null : null;
     if (mode === 'regular' && !invoice) return;
 
-    const fallbackFeeType =
-      selectedSavedAssignment?.components.find((component) => component.feeType.trim().length > 0)?.feeType ?? 'General';
-
     setActivePaymentInvoiceId(invoice?.id ?? null);
     setIsPaymentModalOpen(true);
     setPaymentModalMode(mode);
     setPaymentAmount(mode === 'advance' ? '' : String(invoice?.due ?? ''));
     setPaymentMethod('UPI');
-    setPaymentFeeType(fallbackFeeType);
-    setSelectedPaymentFeeTypes([fallbackFeeType]);
+    setPaymentFeeType('');
+    setSelectedPaymentFeeTypes([]);
     const targetMonth = invoice ? getMonthValueFromDate(invoice.dueDate) : month;
     setPaymentDate(getTodayDateValue());
     setPaymentFeeMonth(targetMonth);
     setPaymentAcademicSession(deriveAcademicSessionFromMonth(targetMonth));
+    setPaymentTransactionId('');
+    setPaymentCheckNumber('');
     setPaymentError(null);
     setPaymentMessage(null);
   }
@@ -1268,6 +1395,8 @@ export function FinancePage() {
     setPaymentDate(getTodayDateValue());
     setPaymentFeeMonth(getCurrentMonthValue());
     setPaymentAcademicSession(deriveAcademicSessionFromMonth(getCurrentMonthValue()));
+    setPaymentTransactionId('');
+    setPaymentCheckNumber('');
     setPaymentModalMode('regular');
     setSelectedPaymentFeeTypes([]);
   }
@@ -1305,6 +1434,8 @@ export function FinancePage() {
       const targetMonth = getMonthValueFromDate(selectedInvoice.dueDate);
       setPaymentFeeMonth(targetMonth);
       setPaymentAcademicSession(deriveAcademicSessionFromMonth(targetMonth));
+      setPaymentTransactionId('');
+      setPaymentCheckNumber('');
       return;
     }
 
@@ -1313,6 +1444,8 @@ export function FinancePage() {
     }
     setPaymentFeeMonth(month);
     setPaymentAcademicSession(deriveAcademicSessionFromMonth(month));
+    setPaymentTransactionId('');
+    setPaymentCheckNumber('');
   }
 
   function handleTogglePaymentFeeType(nextFeeType: string, checked: boolean) {
@@ -1335,6 +1468,21 @@ export function FinancePage() {
   function handlePaymentFeeMonthChange(nextMonthValue: string) {
     setPaymentFeeMonth(nextMonthValue);
     setPaymentAcademicSession(deriveAcademicSessionFromMonth(nextMonthValue));
+  }
+
+  const paymentReferenceLabel = paymentMethod === 'CHEQUE' ? 'Check Number' : paymentMethod === 'UPI' ? 'Transaction ID' : null;
+
+  const paymentReferenceValue = paymentMethod === 'CHEQUE' ? paymentCheckNumber : paymentTransactionId;
+
+  function handlePaymentReferenceChange(nextValue: string) {
+    if (paymentMethod === 'CHEQUE') {
+      setPaymentCheckNumber(nextValue);
+      return;
+    }
+
+    if (paymentMethod === 'UPI') {
+      setPaymentTransactionId(nextValue);
+    }
   }
 
   useEffect(() => {
@@ -1365,6 +1513,16 @@ export function FinancePage() {
 
     if (!paymentDate || !paymentFeeMonth) {
       setPaymentError('Select payment date and fee month before saving.');
+      return;
+    }
+
+    if (paymentMethod === 'UPI' && paymentTransactionId.trim().length === 0) {
+      setPaymentError('Transaction ID is required for UPI payments.');
+      return;
+    }
+
+    if (paymentMethod === 'CHEQUE' && paymentCheckNumber.trim().length === 0) {
+      setPaymentError('Check number is required for cheque payments.');
       return;
     }
 
@@ -1412,7 +1570,9 @@ export function FinancePage() {
         feeTypeAllocations,
         paymentDate,
         feeMonth: paymentFeeMonth,
-        academicSession: paymentAcademicSession.trim() || undefined
+        academicSession: paymentAcademicSession.trim() || undefined,
+        transactionId: paymentTransactionId.trim() || undefined,
+        checkNumber: paymentCheckNumber.trim() || undefined
       });
 
       await loadFinanceData(month);
@@ -1442,6 +1602,16 @@ export function FinancePage() {
       return;
     }
 
+    if (paymentMethod === 'UPI' && paymentTransactionId.trim().length === 0) {
+      setPaymentError('Transaction ID is required for UPI payments.');
+      return;
+    }
+
+    if (paymentMethod === 'CHEQUE' && paymentCheckNumber.trim().length === 0) {
+      setPaymentError('Check number is required for cheque payments.');
+      return;
+    }
+
     setPaymentSaving(true);
     setPaymentMessage(null);
     setPaymentError(null);
@@ -1462,6 +1632,8 @@ export function FinancePage() {
         paymentDate,
         feeMonth: paymentFeeMonth,
         academicSession: paymentAcademicSession.trim() || undefined,
+        transactionId: paymentTransactionId.trim() || undefined,
+        checkNumber: paymentCheckNumber.trim() || undefined,
         sourceInvoiceId:
           typeof activePaymentInvoiceId === 'string' && activePaymentInvoiceId.trim().length > 0
             ? activePaymentInvoiceId
@@ -1606,7 +1778,7 @@ export function FinancePage() {
     <div className="space-y-1 text-sm">
       {components.map((component, index) => (
         <div key={`summary-${index}`} className="flex items-center justify-between">
-          <span>{component.feeType} ({cadenceLabel(component.cadence)})</span>
+          <span>{component.feeType || 'Unselected Fee Type'} ({cadenceLabel(component.cadence)})</span>
           <span className="font-medium text-brand-navy">{formatCurrency(Number(component.amount || 0))}</span>
         </div>
       ))}
@@ -1652,6 +1824,33 @@ export function FinancePage() {
         <span className="text-xl font-bold text-brand-navy">{formatCurrency(finalTotal)}</span>
       </div>
     </div>
+  );
+
+  const feePaymentProgressContent = (
+    <section className="rounded-xl border border-slate-200/80 shadow-card bg-white p-4">
+      <h4 className="font-semibold text-brand-navy">Fee Payment Progress</h4>
+      <div className="mt-2 rounded-md border border-slate-200 bg-white">
+        <div className="grid grid-cols-[minmax(0,2.6fr)_minmax(0,1fr)_minmax(0,1fr)] border-b border-slate-200/80 bg-slate-50/80 px-2 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <span className="pr-2 whitespace-nowrap">Fee Type</span>
+          <span className="text-right whitespace-nowrap">Paid</span>
+          <span className="text-right whitespace-nowrap">Left</span>
+        </div>
+        {summaryFeeTypeRows.length === 0 ? (
+          <p className="px-3 py-3 text-sm text-slate-500">Add fee components to view paid-vs-remaining status.</p>
+        ) : (
+          summaryFeeTypeRows.map((row) => (
+            <div
+              key={`summary-fee-progress-${row.feeType}`}
+              className="grid grid-cols-[minmax(0,2.6fr)_minmax(0,1fr)_minmax(0,1fr)] border-b border-slate-100 px-2 py-2 text-sm last:border-b-0"
+            >
+              <span className="truncate pr-2 leading-5 text-slate-700" title={`${row.feeType} (${cadenceLabel(row.cadence)})`}>{row.feeType} ({cadenceLabel(row.cadence)})</span>
+              <span className="text-right text-emerald-700 tabular-nums whitespace-nowrap">{formatCurrency(row.paidAmount)}</span>
+              <span className="text-right font-semibold text-brand-navy tabular-nums whitespace-nowrap">{formatCurrency(row.remainingAmount)}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
   );
 
   return (
@@ -1768,7 +1967,11 @@ export function FinancePage() {
                 {components.length === 0 ? <p className="text-sm text-slate-500">No fee components added yet.</p> : null}
                 <div className="space-y-2">
                   {components.map((component, index) => {
-                    const oneTimeOnly = isOneTimeFeeType(component.feeType);
+                    const oneTimeOnly = component.feeType.trim().length > 0 && isOneTimeFeeType(component.feeType);
+                    const currentFeeType = component.feeType.trim().toLowerCase();
+                    const duplicateFeeTypes = new Set(
+                      selectedComponentFeeTypes.filter((feeType, feeTypeIndex) => feeTypeIndex !== index)
+                    );
 
                     return (
                       <div key={`${component.feeType}-${component.cadence}-${index}`} className="grid grid-cols-1 gap-2 md:grid-cols-12">
@@ -1777,14 +1980,24 @@ export function FinancePage() {
                           value={component.feeType}
                           onChange={(event) => {
                             const nextFeeType = event.target.value;
+                            if (!nextFeeType) {
+                              updateFeeComponentRow(index, { feeType: '' });
+                              return;
+                            }
+
                             updateFeeComponentRow(index, {
                               feeType: nextFeeType,
-                              cadence: isOneTimeFeeType(nextFeeType) ? 'ONCE' : component.cadence
+                              cadence: isOneTimeFeeType(nextFeeType)
+                                ? 'ONCE'
+                                : component.cadence === 'ONCE'
+                                  ? 'YEARLY'
+                                  : component.cadence
                             });
                           }}
                         >
+                          <option value="" disabled={component.feeType.trim().length > 0}>Select your fee type</option>
                           {feeTypeOptions.map((option) => (
-                            <option key={option} value={option}>
+                            <option key={option} value={option} disabled={duplicateFeeTypes.has(option.toLowerCase()) && option.toLowerCase() !== currentFeeType}>
                               {option}
                             </option>
                           ))}
@@ -1793,12 +2006,12 @@ export function FinancePage() {
                           className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white md:col-span-3"
                           value={component.cadence}
                           onChange={(event) => updateFeeComponentRow(index, { cadence: event.target.value as FeeComponentCadence })}
-                          disabled={oneTimeOnly}
-                          title={oneTimeOnly ? 'Admission Fee is always one-time.' : undefined}
+                          disabled={oneTimeOnly || component.feeType.trim().length === 0}
+                          title={oneTimeOnly ? 'Admission Fee and TC Fee are always one-time.' : component.feeType.trim().length === 0 ? 'Select a fee type first.' : undefined}
                         >
                           <option value="YEARLY">Yearly</option>
                           <option value="MONTHLY">Monthly</option>
-                          <option value="ONCE">Once</option>
+                          <option value="ONCE">Once in lifetime</option>
                         </select>
                         <div className="flex items-center rounded-md border border-slate-200/80 bg-slate-50/50 px-3 transition-colors focus-within:border-brand-sky focus-within:bg-white md:col-span-3">
                           <span className="mr-2 text-sm text-slate-500">₹</span>
@@ -1855,12 +2068,13 @@ export function FinancePage() {
                       type="number"
                       min="0"
                       step="0.01"
-                      placeholder={discount.type === 'FLAT' ? 'Enter amount' : 'Enter percentage'}
+                      placeholder={discount.type === 'PERCENTAGE' ? 'Discount %' : 'Discount amount'}
                       value={discount.value}
                       onChange={(event) => updateDiscountRow(discount.id, { value: event.target.value })}
                     />
                     <input
                       className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white md:col-span-5"
+                      type="text"
                       placeholder="Reason (optional)"
                       value={discount.reason}
                       onChange={(event) => updateDiscountRow(discount.id, { reason: event.target.value })}
@@ -2157,6 +2371,8 @@ export function FinancePage() {
               Record Advance Payment
             </button>
           </section>
+
+          {feePaymentProgressContent}
 
           {isPanelPinned('summary') ? (
             <section className="space-y-3 rounded-xl border border-slate-200/80 shadow-card bg-white p-4">
@@ -2514,30 +2730,50 @@ export function FinancePage() {
 
               <div>
                 <p className="mb-1 text-xs text-slate-500">Payment Mode</p>
-                <select className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white" value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as 'UPI' | 'CASH')}>
+                <select className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white" value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as 'UPI' | 'CASH' | 'CHEQUE')}>
                   <option value="UPI">UPI</option>
                   <option value="CASH">Cash</option>
+                  <option value="CHEQUE">Cheque</option>
                 </select>
               </div>
+
+              {paymentReferenceLabel ? (
+                <div>
+                  <p className="mb-1 text-xs text-slate-500">{paymentReferenceLabel}</p>
+                  <input
+                    className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
+                    type="text"
+                    value={paymentReferenceValue}
+                    onChange={(event) => handlePaymentReferenceChange(event.target.value)}
+                    placeholder={paymentReferenceLabel}
+                  />
+                </div>
+              ) : null}
 
               <div className="md:col-span-2">
                 <p className="mb-1 text-xs text-slate-500">Fee Types Paid</p>
                 <div className="max-h-40 overflow-auto rounded-md border border-slate-200/80 bg-slate-50/50 p-2">
                   {paymentFeeTypeOptions.map((option) => {
                     const breakdownEntry = paymentFeeBreakdown.find((entry) => entry.feeType === option);
+                    const disabledOption = blockedPaidNonMonthlyFeeTypeSet.has(normalizeFeeTypeKey(option));
 
                     return (
-                      <label key={`payment-fee-type-${option}`} className="mb-1 flex cursor-pointer items-center justify-between gap-3 rounded-md border border-transparent bg-white px-3 py-2 text-sm hover:border-brand-sky/40 last:mb-0">
+                      <label key={`payment-fee-type-${option}`} className={`mb-1 flex items-center justify-between gap-3 rounded-md border border-transparent bg-white px-3 py-2 text-sm last:mb-0 ${disabledOption ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-brand-sky/40'}`}>
                         <span className="flex items-center gap-2">
                           <input
                             type="checkbox"
                             checked={selectedPaymentFeeTypes.includes(option)}
                             onChange={(event) => handleTogglePaymentFeeType(option, event.target.checked)}
                             className="h-4 w-4 rounded border-slate-300 text-brand-navy focus:ring-brand-sky"
+                            disabled={disabledOption}
                           />
                           <span className="text-slate-700">{option}</span>
                         </span>
-                        {breakdownEntry ? <span className="text-xs font-semibold text-brand-navy">Remaining: {formatCurrency(breakdownEntry.remainingAmount)}</span> : null}
+                        {disabledOption ? (
+                          <span className="text-xs font-semibold text-amber-700">Already paid</span>
+                        ) : breakdownEntry ? (
+                          <span className="text-xs font-semibold text-brand-navy">Remaining: {formatCurrency(breakdownEntry.remainingAmount)}</span>
+                        ) : null}
                       </label>
                     );
                   })}

@@ -181,6 +181,8 @@ model FeePayment {
   paymentDate   DateTime      @default(now())
   feeMonth      String?
   academicSession String?
+  transactionId String?
+  checkNumber   String?
   dueAfterPayment Decimal?     @db.Decimal(10, 2)
   createdAt     DateTime      @default(now())
   invoice       FeeInvoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -239,4 +241,5 @@ enum DiscountType {
 enum PaymentMethod {
   UPI
   CASH
+  CHEQUE
 }

@@ -82,7 +82,7 @@ export interface AdminStudentProfile {
       payments: Array<{
         id: string;
         amount: number;
-        paymentMethod: 'UPI' | 'CASH';
+        paymentMethod: 'UPI' | 'CASH' | 'CHEQUE';
         feeType: string | null;
         dueAfterPayment: number | null;
         createdAt: string;
@@ -91,7 +91,7 @@ export interface AdminStudentProfile {
     payments: Array<{
       id: string;
       amount: number;
-      paymentMethod: 'UPI' | 'CASH';
+      paymentMethod: 'UPI' | 'CASH' | 'CHEQUE';
       feeType: string | null;
       dueAfterPayment: number | null;
       createdAt: string;
@@ -350,10 +350,12 @@ export interface FinanceOverview {
     createdAt: string;
     paymentDate: string;
     amount: number;
-    paymentMethod: 'UPI' | 'CASH';
+    paymentMethod: 'UPI' | 'CASH' | 'CHEQUE';
     feeType: string | null;
     feeMonth: string | null;
     academicSession: string | null;
+    transactionId?: string | null;
+    checkNumber?: string | null;
     invoice: {
       id: string;
       title: string;
@@ -792,6 +794,7 @@ export async function createFeeInvoice(payload: {
   amount?: number;
   componentBreakdown?: Array<{
     feeType: string;
+    cadence?: 'MONTHLY' | 'YEARLY' | 'ONCE' | null;
     amount: number;
   }>;
   dueDate?: string;
@@ -1081,7 +1084,7 @@ export async function payFeeInvoiceAsAdmin(
   invoiceId: string,
   payload: {
     amount: number;
-    paymentMethod: 'UPI' | 'CASH';
+    paymentMethod: 'UPI' | 'CASH' | 'CHEQUE';
     feeType?: string;
     feeTypeAllocations?: Array<{
       feeType: string;
@@ -1090,6 +1093,8 @@ export async function payFeeInvoiceAsAdmin(
     paymentDate?: string;
     feeMonth?: string;
     academicSession?: string;
+    transactionId?: string;
+    checkNumber?: string;
   }
 ): Promise<{ message: string }> {
   const response = await fetch(`${API_BASE_URL}/fees/invoices/${invoiceId}/pay`, {
@@ -1100,7 +1105,7 @@ export async function payFeeInvoiceAsAdmin(
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({ message: 'Failed to record fee payment' }));
-    throw new Error(data.message ?? 'Failed to record fee payment');
+    throw new Error(formatValidationError(data, 'Failed to record fee payment'));
   }
 
   return response.json();
@@ -1110,12 +1115,14 @@ export async function recordStudentAdvancePaymentAsAdmin(
   studentId: string,
   payload: {
     amount: number;
-    paymentMethod: 'UPI' | 'CASH';
+    paymentMethod: 'UPI' | 'CASH' | 'CHEQUE';
     feeType?: string;
     sourceInvoiceId?: string;
     paymentDate?: string;
     feeMonth?: string;
     academicSession?: string;
+    transactionId?: string;
+    checkNumber?: string;
   }
 ): Promise<{
   message: string;
@@ -1135,7 +1142,7 @@ export async function recordStudentAdvancePaymentAsAdmin(
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({ message: 'Failed to record advance payment' }));
-    throw new Error(data.message ?? 'Failed to record advance payment');
+    throw new Error(formatValidationError(data, 'Failed to record advance payment'));
   }
 
   return response.json();

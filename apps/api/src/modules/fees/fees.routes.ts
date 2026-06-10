@@ -14,6 +14,7 @@ const createInvoiceSchema = z.object({
     .array(
       z.object({
         feeType: z.string().trim().min(1),
+        cadence: z.enum(['MONTHLY', 'YEARLY', 'ONCE']).optional(),
         amount: z.number().positive()
       })
     )
@@ -33,7 +34,7 @@ const paymentDatePattern = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
 const payFeeInvoiceSchema = z.object({
   amount: z.number().positive(),
-  paymentMethod: z.enum(['UPI', 'CASH']),
+  paymentMethod: z.enum(['UPI', 'CASH', 'CHEQUE']),
   feeType: z.string().min(1).optional(),
   feeTypeAllocations: z
     .array(
@@ -45,17 +46,21 @@ const payFeeInvoiceSchema = z.object({
     .optional(),
   paymentDate: z.string().regex(paymentDatePattern).optional(),
   feeMonth: z.string().regex(feeMonthPattern).optional(),
-  academicSession: z.string().trim().min(1).max(20).optional()
+    academicSession: z.string().trim().min(1).max(20).optional(),
+    transactionId: z.string().trim().min(1).max(100).optional(),
+    checkNumber: z.string().trim().min(1).max(100).optional()
 });
 
 const recordAdvancePaymentSchema = z.object({
   amount: z.number().positive(),
-  paymentMethod: z.enum(['UPI', 'CASH']),
+    paymentMethod: z.enum(['UPI', 'CASH', 'CHEQUE']),
   feeType: z.string().min(1).optional(),
   sourceInvoiceId: z.string().min(1).optional(),
   paymentDate: z.string().regex(paymentDatePattern).optional(),
   feeMonth: z.string().regex(feeMonthPattern).optional(),
-  academicSession: z.string().trim().min(1).max(20).optional()
+    academicSession: z.string().trim().min(1).max(20).optional(),
+    transactionId: z.string().trim().min(1).max(100).optional(),
+    checkNumber: z.string().trim().min(1).max(100).optional()
 });
 
 const upsertFeeAssignmentSchema = z.object({
@@ -87,6 +92,13 @@ const upsertFeeAssignmentSchema = z.object({
 });
 
 const MULTI_DISCOUNT_REASON_PREFIX = 'MULTI_DISCOUNTS_V1:';
+
+type FeeComponentCadence = 'MONTHLY' | 'YEARLY' | 'ONCE';
+type InvoiceComponentSnapshotEntry = {
+  feeType: string;
+  amount: number;
+  cadence: FeeComponentCadence | null;
+};
 
 type DiscountEntry = {
   type: 'FLAT' | 'PERCENTAGE';
@@ -289,10 +301,11 @@ function toCsvCell(value: unknown) {
   return text;
 }
 
-function serializeInvoiceComponentSnapshot(componentBreakdown: Array<{ feeType: string; amount: number }> | undefined) {
+function serializeInvoiceComponentSnapshot(componentBreakdown: Array<{ feeType: string; amount: number; cadence?: FeeComponentCadence | null }> | undefined) {
   const normalizedBreakdown = (componentBreakdown ?? [])
     .map((entry) => ({
       feeType: entry.feeType.trim(),
+      cadence: entry.cadence ?? null,
       amount: Number(entry.amount)
     }))
     .filter((entry) => entry.feeType.length > 0 && Number.isFinite(entry.amount) && entry.amount > 0);
@@ -306,11 +319,11 @@ function serializeInvoiceComponentSnapshot(componentBreakdown: Array<{ feeType: 
 
 function parseInvoiceComponentSnapshot(componentSnapshot: string | null | undefined) {
   if (!componentSnapshot) {
-    return [] as Array<{ feeType: string; amount: number }>;
+    return [] as InvoiceComponentSnapshotEntry[];
   }
 
   try {
-    const parsed = JSON.parse(componentSnapshot) as Array<{ feeType?: string; amount?: number }>;
+    const parsed = JSON.parse(componentSnapshot) as Array<{ feeType?: string; amount?: number; cadence?: string | null }>;
     if (!Array.isArray(parsed)) {
       return [];
     }
@@ -318,11 +331,12 @@ function parseInvoiceComponentSnapshot(componentSnapshot: string | null | undefi
     return parsed
       .map((entry) => ({
         feeType: typeof entry.feeType === 'string' ? entry.feeType.trim() : '',
+        cadence: entry.cadence === 'MONTHLY' || entry.cadence === 'YEARLY' || entry.cadence === 'ONCE' ? entry.cadence : null,
         amount: Number(entry.amount ?? 0)
       }))
       .filter((entry) => entry.feeType.length > 0 && Number.isFinite(entry.amount) && entry.amount > 0);
   } catch {
-    return [];
+    return [] as InvoiceComponentSnapshotEntry[];
   }
 }
 
@@ -552,6 +566,12 @@ feesRouter.put('/fees/student-assignments/:studentId', async (req: Authenticated
     }
 
     const refreshed = await prisma.$transaction(async (tx: any) => {
+      const normalizedFeeTypes = payload.components.map((component) => component.feeType.trim().toLowerCase()).filter(Boolean);
+      const uniqueFeeTypes = new Set(normalizedFeeTypes);
+      if (uniqueFeeTypes.size !== normalizedFeeTypes.length) {
+        throw new Error('Duplicate fee types are not allowed in the fee component list.');
+      }
+
       const assignment = await tx.studentFeeAssignment.upsert({
         where: { studentId: req.params.studentId },
         update: {
@@ -883,40 +903,57 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
     dueDate.setHours(12, 0, 0, 0);
 
     if (annualFeeInvoice) {
-      const requestedFeeTypes = Array.from(
-        new Set(
-          (payload.componentBreakdown ?? [])
-            .map((entry) => entry.feeType.trim())
-            .filter((feeType) => feeType.length > 0)
-        )
-      );
+      const requestedComponents = (payload.componentBreakdown ?? [])
+        .map((entry) => ({
+          feeType: entry.feeType.trim(),
+          cadence: entry.cadence ?? null
+        }))
+        .filter((entry) => entry.feeType.length > 0);
 
-      if (requestedFeeTypes.length === 0) {
+      if (requestedComponents.length === 0) {
         return res.status(400).json({ message: 'Select at least one fee component while creating annual invoice.' });
       }
 
+      const currentAcademicSession = deriveAcademicSessionFromDate(dueDate);
+
       const existingAnnualInvoices = await prisma.feeInvoice.findMany({
         where: {
-          studentId: student.id,
-          title: payload.title
+          studentId: student.id
         },
         select: {
           id: true,
+          dueDate: true,
           componentSnapshot: true
         }
       });
 
-      const alreadyInvoicedFeeTypeLookup = new Set(
-        existingAnnualInvoices
-          .flatMap((invoice: { componentSnapshot: string | null }) => parseInvoiceComponentSnapshot(invoice.componentSnapshot))
-          .map((entry: { feeType: string; amount: number }) => entry.feeType.trim().toLowerCase())
+      const existingSnapshotRows = existingAnnualInvoices.flatMap(
+        (invoice: { componentSnapshot: string | null; dueDate: Date }) =>
+          parseInvoiceComponentSnapshot(invoice.componentSnapshot).map((entry: { feeType: string; cadence: string | null }) => ({
+            feeType: entry.feeType.trim().toLowerCase(),
+            cadence: entry.cadence as InvoiceComponentSnapshotEntry['cadence'],
+            academicSession: deriveAcademicSessionFromDate(invoice.dueDate)
+          }))
       );
 
-      const overlappingFeeTypes = requestedFeeTypes.filter((feeType) => alreadyInvoicedFeeTypeLookup.has(feeType.trim().toLowerCase()));
+      const overlappingFeeTypes = requestedComponents.filter((requested) => {
+        const normalizedFeeType = requested.feeType.toLowerCase();
+
+        if (requested.cadence === 'ONCE') {
+          return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string }) => entry.feeType === normalizedFeeType);
+        }
+
+        if (requested.cadence === 'YEARLY') {
+          return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string }) => entry.feeType === normalizedFeeType && entry.academicSession === currentAcademicSession);
+        }
+
+        return false;
+      });
 
       if (overlappingFeeTypes.length > 0) {
+        const overlappingLabels = overlappingFeeTypes.map((entry) => entry.feeType).join(', ');
         return res.status(409).json({
-          message: `Invoice already exists for these fee component(s): ${overlappingFeeTypes.join(', ')}.`
+          message: `Invoice already exists for these fee component(s): ${overlappingLabels}.`
         });
       }
     } else {
@@ -1178,6 +1215,14 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
       return res.status(400).json({ message: 'Invalid payment date.' });
     }
 
+    if (payload.paymentMethod === 'UPI' && !payload.transactionId?.trim()) {
+      return res.status(400).json({ message: 'Transaction ID is required for UPI payments.' });
+    }
+
+    if (payload.paymentMethod === 'CHEQUE' && !payload.checkNumber?.trim()) {
+      return res.status(400).json({ message: 'Check number is required for cheque payments.' });
+    }
+
     const feeMonth = resolveFeeMonth(payload.feeMonth, invoice.dueDate);
     const academicSession = resolveAcademicSession(payload.academicSession, feeMonth);
 
@@ -1233,6 +1278,8 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
             paymentDate,
             feeMonth,
             academicSession,
+            transactionId: payload.transactionId?.trim() || undefined,
+            checkNumber: payload.checkNumber?.trim() || undefined,
             dueAfterPayment: runningDue
           }
         });
@@ -1260,6 +1307,8 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
             paymentDate,
             feeMonth,
             academicSession,
+            transactionId: payload.transactionId?.trim() || undefined,
+            checkNumber: payload.checkNumber?.trim() || undefined,
             dueAfterPayment: nextDue
           }
         });
@@ -1316,7 +1365,14 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
       return res.status(400).json({ message: 'Validation failed', issues: error.issues });
     }
 
-    return res.status(400).json({ message: 'Unable to process fee payment.' });
+    const rawMessage = error instanceof Error ? error.message : '';
+    const message =
+      rawMessage.includes('transactionId') || rawMessage.includes('checkNumber')
+        ? 'Payment schema is out of sync with the database. Run migrations and restart the API server.'
+        : rawMessage || 'Unable to process fee payment.';
+
+    console.error('Fee payment processing failed', error);
+    return res.status(400).json({ message });
   }
 });
 
@@ -1360,6 +1416,14 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
     const paymentDate = parsePaymentDate(payload.paymentDate);
     if (!paymentDate) {
       return res.status(400).json({ message: 'Invalid payment date.' });
+    }
+
+    if (payload.paymentMethod === 'UPI' && !payload.transactionId?.trim()) {
+      return res.status(400).json({ message: 'Transaction ID is required for UPI payments.' });
+    }
+
+    if (payload.paymentMethod === 'CHEQUE' && !payload.checkNumber?.trim()) {
+      return res.status(400).json({ message: 'Check number is required for cheque payments.' });
     }
 
     const normalizedFeeMonth = payload.feeMonth && feeMonthPattern.test(payload.feeMonth) ? payload.feeMonth : undefined;
@@ -1412,6 +1476,8 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
             paymentDate,
             feeMonth: allocationFeeMonth,
             academicSession: allocationAcademicSession,
+            transactionId: payload.transactionId?.trim() || undefined,
+            checkNumber: payload.checkNumber?.trim() || undefined,
             dueAfterPayment: nextDue
           }
         });
@@ -1469,6 +1535,8 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
             paymentDate,
             feeMonth: creditFeeMonth,
             academicSession: creditAcademicSession,
+            transactionId: payload.transactionId?.trim() || undefined,
+            checkNumber: payload.checkNumber?.trim() || undefined,
             dueAfterPayment: 0
           }
         });
@@ -1516,7 +1584,14 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
       return res.status(400).json({ message: 'Validation failed', issues: error.issues });
     }
 
-    return res.status(400).json({ message: 'Unable to record advance payment.' });
+    const rawMessage = error instanceof Error ? error.message : '';
+    const message =
+      rawMessage.includes('transactionId') || rawMessage.includes('checkNumber')
+        ? 'Payment schema is out of sync with the database. Run migrations and restart the API server.'
+        : rawMessage || 'Unable to record advance payment.';
+
+    console.error('Advance payment processing failed', error);
+    return res.status(400).json({ message });
   }
 });
 

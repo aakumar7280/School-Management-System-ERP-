@@ -206,7 +206,7 @@ export function MainLayout({ children, session, onLogout }: MainLayoutProps) {
     <div className="min-h-screen bg-brand-light text-slate-800">
       {/* ── Header ── */}
       <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white shadow-sm">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4 px-6 py-3">
+        <div className="flex w-full items-center justify-between gap-4 px-4 py-3 md:px-6">
           <div className="flex items-center gap-3">
             {/* Logo mark */}
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-brand-navy to-brand-sky text-sm font-bold text-white shadow-sm">
@@ -308,7 +308,7 @@ export function MainLayout({ children, session, onLogout }: MainLayoutProps) {
       </header>
 
       {/* ── Body ── */}
-      <div className="mx-auto grid w-full max-w-[1600px] grid-cols-12 gap-0 md:gap-0">
+      <div className="grid w-full grid-cols-12 gap-0 md:gap-0">
         {/* Sidebar */}
         <aside className="col-span-12 border-r border-slate-200/60 bg-white px-3 py-4 md:sticky md:top-[57px] md:col-span-3 md:h-[calc(100vh-57px)] md:overflow-y-auto md:shadow-sidebar lg:col-span-2">
           <nav className="space-y-1">
