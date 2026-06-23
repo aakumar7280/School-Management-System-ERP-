@@ -163,7 +163,7 @@ export function FinancePage() {
   const [previousDueSaving, setPreviousDueSaving] = useState(false);
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [previousDueAmount, setPreviousDueAmount] = useState('');
-  const [previousDueDate, setPreviousDueDate] = useState('');
+  const [invoiceTitleDraft, setInvoiceTitleDraft] = useState('');
   const [overview, setOverview] = useState<FinanceOverview | null>(null);
   const [financeLoading, setFinanceLoading] = useState(false);
   const [financeError, setFinanceError] = useState<string | null>(null);
@@ -327,15 +327,6 @@ export function FinancePage() {
     return date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   }, [currentInvoiceMonth]);
 
-  const defaultPreviousDueDate = useMemo(() => {
-    const previousDate = new Date(selectedMonthWindow.start);
-    previousDate.setDate(previousDate.getDate() - 1);
-    const year = previousDate.getFullYear();
-    const monthPart = String(previousDate.getMonth() + 1).padStart(2, '0');
-    const day = String(previousDate.getDate()).padStart(2, '0');
-    return `${year}-${monthPart}-${day}`;
-  }, [selectedMonthWindow.start]);
-
   const filteredTransactions = useMemo(() => {
     const allTransactions = overview?.feeTransactions ?? [];
     if (!selectedStudent) return [];
@@ -384,17 +375,42 @@ export function FinancePage() {
         });
       });
 
+    const assignmentCadenceByFeeType = new Map<string, FeeComponentCadence>();
+    (selectedSavedAssignment?.components ?? []).forEach((component) => {
+      const key = normalizeFeeTypeKey(component.feeType);
+      if (!key) {
+        return;
+      }
+
+      assignmentCadenceByFeeType.set(key, component.cadence as FeeComponentCadence);
+    });
+
     return invoiceComponentBreakdown
-      .map(({ feeType, amount }) => ({
-        feeType,
-        monthlyPayable: 0,
-        installmentPayable: amount,
-        paidAmount: Math.min(paidByFeeType.get(feeType) ?? 0, amount),
-        remainingAmount: Math.max(amount - (paidByFeeType.get(feeType) ?? 0), 0)
-      }))
+      .map((component) => {
+        const feeType = component.feeType;
+        const amount = component.amount;
+        const snapshotCadence = (component as { cadence?: FeeComponentCadence | null }).cadence;
+        const mappedCadence = assignmentCadenceByFeeType.get(normalizeFeeTypeKey(feeType));
+        const resolvedCadence = snapshotCadence ?? mappedCadence ?? null;
+        const monthlyPayable =
+          resolvedCadence === 'MONTHLY'
+            ? amount / 12
+            : resolvedCadence === 'YEARLY'
+              ? amount
+              : amount;
+
+        return {
+          feeType,
+          cadence: resolvedCadence,
+          monthlyPayable,
+          installmentPayable: amount,
+          paidAmount: Math.min(paidByFeeType.get(feeType) ?? 0, amount),
+          remainingAmount: Math.max(amount - (paidByFeeType.get(feeType) ?? 0), 0)
+        };
+      })
       .filter((entry) => entry.remainingAmount > 0.009)
       .sort((left, right) => right.remainingAmount - left.remainingAmount);
-  }, [activePaymentInvoice, filteredTransactions]);
+  }, [activePaymentInvoice, filteredTransactions, selectedSavedAssignment]);
 
   const configuredCadenceByFeeType = useMemo(() => {
     const cadenceByFeeType = new Map<string, FeeComponentCadence>();
@@ -537,6 +553,26 @@ export function FinancePage() {
 
   const subtotal = useMemo(() => yearlySubtotal + monthlySubtotal * 12 + onceSubtotal, [yearlySubtotal, monthlySubtotal, onceSubtotal]);
 
+  const yearlyMonthlyDueSubtotal = useMemo(
+    () =>
+      components
+        .filter((component) => component.cadence === 'YEARLY')
+        .reduce((sum, component) => {
+          const amount = Number(component.amount || 0);
+          if (!Number.isFinite(amount) || amount <= 0) {
+            return sum;
+          }
+
+          return sum + Math.ceil(amount / 12);
+        }, 0),
+    [components]
+  );
+
+  const monthlyDueSubtotal = useMemo(
+    () => monthlySubtotal + yearlyMonthlyDueSubtotal + onceSubtotal,
+    [monthlySubtotal, yearlyMonthlyDueSubtotal, onceSubtotal]
+  );
+
   const computedDiscountAmount = useMemo(() => {
     const rawDiscountAmount = discounts.reduce((sum, discount) => {
       const parsedValue = Number(discount.value || 0);
@@ -555,6 +591,28 @@ export function FinancePage() {
   }, [discounts, subtotal]);
 
   const finalTotal = useMemo(() => Math.max(subtotal - computedDiscountAmount, 0), [subtotal, computedDiscountAmount]);
+
+  const computedMonthlyDiscountAmount = useMemo(() => {
+    const rawDiscountAmount = discounts.reduce((sum, discount) => {
+      const parsedValue = Number(discount.value || 0);
+      if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+        return sum;
+      }
+
+      if (discount.type === 'PERCENTAGE') {
+        return sum + (monthlyDueSubtotal * parsedValue) / 100;
+      }
+
+      return sum + parsedValue;
+    }, 0);
+
+    return Math.min(Math.max(rawDiscountAmount, 0), monthlyDueSubtotal);
+  }, [discounts, monthlyDueSubtotal]);
+
+  const finalMonthlyDue = useMemo(
+    () => Math.max(monthlyDueSubtotal - computedMonthlyDiscountAmount, 0),
+    [computedMonthlyDiscountAmount, monthlyDueSubtotal]
+  );
 
   const summaryFeeTypeRows = useMemo(() => {
     const totalByFeeType = new Map<string, { feeType: string; annualizedTotal: number; cadence: FeeComponentCadence }>();
@@ -612,15 +670,15 @@ export function FinancePage() {
     const components = selectedSavedAssignment.components
       .map((component) => {
         const baseAmount = Number(component.amount || 0);
-        const cyclePayable = component.cadence === 'MONTHLY' ? baseAmount * 12 : component.cadence === 'YEARLY' ? baseAmount : baseAmount;
+        const monthlyPayable = baseAmount;
 
         return {
           id: component.id,
           cadence: component.cadence,
-          cyclePayable
+          monthlyPayable
         };
       })
-      .filter((component) => Number.isFinite(component.cyclePayable) && component.cyclePayable > 0);
+      .filter((component) => Number.isFinite(component.monthlyPayable) && component.monthlyPayable > 0);
 
     const defaultComponentIds = components.map((component) => component.id);
     const fallbackComponentIds = components.map((component) => component.id);
@@ -633,7 +691,7 @@ export function FinancePage() {
 
     const componentSubtotal = components
       .filter((component) => effectiveComponentIds.includes(component.id))
-      .reduce((sum, component) => sum + component.cyclePayable, 0);
+      .reduce((sum, component) => sum + component.monthlyPayable, 0);
 
     const discounts =
       selectedSavedAssignment.discounts && selectedSavedAssignment.discounts.length > 0
@@ -834,8 +892,8 @@ export function FinancePage() {
           component.cadence === 'MONTHLY'
             ? baseAmount
             : component.cadence === 'YEARLY'
-              ? baseAmount / 12
-              : 0;
+              ? baseAmount
+              : baseAmount;
         const cyclePayable = component.cadence === 'MONTHLY' ? baseAmount * 12 : component.cadence === 'YEARLY' ? baseAmount : baseAmount;
 
         return {
@@ -874,22 +932,7 @@ export function FinancePage() {
       .filter((discount) => Number.isFinite(discount.value) && discount.value > 0);
   }, [selectedSavedAssignment]);
 
-  const defaultInvoicePreviewComponentIds = useMemo(
-    () => invoicePreviewComponents.filter((component) => component.cyclePayable > 0).map((component) => component.id),
-    [invoicePreviewComponents]
-  );
-
-  const fallbackInvoicePreviewComponentIds = useMemo(
-    () => invoicePreviewComponents.filter((component) => component.cyclePayable > 0).map((component) => component.id),
-    [invoicePreviewComponents]
-  );
-
-  const effectiveInvoicePreviewComponentIds =
-    invoicePreviewSelectedComponentIds.length > 0
-      ? invoicePreviewSelectedComponentIds
-      : defaultInvoicePreviewComponentIds.length > 0
-        ? defaultInvoicePreviewComponentIds
-        : fallbackInvoicePreviewComponentIds;
+  const effectiveInvoicePreviewComponentIds = invoicePreviewSelectedComponentIds;
 
   const effectiveInvoicePreviewDiscountIds =
     hasTouchedInvoicePreviewDiscountSelection
@@ -929,6 +972,27 @@ export function FinancePage() {
     [selectedInvoiceComponentSubtotal, selectedInvoiceDiscountAmount]
   );
 
+  const selectedInvoiceMonthlyComponentSubtotal = useMemo(
+    () => selectedInvoiceComponents.reduce((sum, component) => sum + component.monthlyPayable, 0),
+    [selectedInvoiceComponents]
+  );
+
+  const selectedInvoiceMonthlyDiscountAmount = useMemo(() => {
+    if (selectedInvoiceComponentSubtotal <= 0 || selectedInvoiceDiscountAmount <= 0) {
+      return 0;
+    }
+
+    const proratedDiscount =
+      (selectedInvoiceMonthlyComponentSubtotal / selectedInvoiceComponentSubtotal) * selectedInvoiceDiscountAmount;
+
+    return Math.min(Math.max(proratedDiscount, 0), selectedInvoiceMonthlyComponentSubtotal);
+  }, [selectedInvoiceComponentSubtotal, selectedInvoiceDiscountAmount, selectedInvoiceMonthlyComponentSubtotal]);
+
+  const selectedInvoiceMonthlyNetAmount = useMemo(
+    () => Math.max(selectedInvoiceMonthlyComponentSubtotal - selectedInvoiceMonthlyDiscountAmount, 0),
+    [selectedInvoiceMonthlyComponentSubtotal, selectedInvoiceMonthlyDiscountAmount]
+  );
+
   const selectedInvoiceComponentBreakdown = useMemo(() => {
     if (selectedInvoiceComponents.length === 0 || selectedInvoiceNetAmount <= 0) {
       return [] as Array<{ feeType: string; amount: number }>;
@@ -960,8 +1024,8 @@ export function FinancePage() {
   }, [selectedInvoiceComponentSubtotal, selectedInvoiceComponents, selectedInvoiceDiscountAmount, selectedInvoiceNetAmount]);
 
   const selectedMonthInvoicePayable = useMemo(
-    () => Math.max(selectedInvoiceNetAmount, 0),
-    [selectedInvoiceNetAmount]
+    () => Math.max(selectedInvoiceMonthlyNetAmount, 0),
+    [selectedInvoiceMonthlyNetAmount]
   );
 
   const effectiveNextMonthDue = useMemo(
@@ -1079,10 +1143,6 @@ export function FinancePage() {
   useEffect(() => {
     loadFinanceData(month);
   }, [month]);
-
-  useEffect(() => {
-    setPreviousDueDate(defaultPreviousDueDate);
-  }, [defaultPreviousDueDate]);
 
   function fillFormFromAssignment(assignment: StudentFeeAssignment) {
     setSelectedStudentId(assignment.studentId);
@@ -1215,27 +1275,16 @@ export function FinancePage() {
       .filter((component) => Number.isFinite(component.amount) && component.amount > 0)
       .map((component) => component.id);
 
-    const defaultSelectedComponents = selectedSavedAssignment.components
-      .map((component) => ({ id: component.id, amount: Number(component.amount || 0), cadence: component.cadence }))
-      .filter((component) => Number.isFinite(component.amount) && component.amount > 0 && component.cadence !== 'ONCE')
-      .map((component) => component.id);
-
     if (selectableComponents.length === 0) {
       setAssignmentError('No valid fee components available for invoice generation.');
       return;
     }
 
-    const selectableDiscounts =
-      selectedSavedAssignment.discounts && selectedSavedAssignment.discounts.length > 0
-        ? selectedSavedAssignment.discounts.map((discount) => discount.id)
-        : selectedSavedAssignment.discount
-          ? [selectedSavedAssignment.discount.id]
-          : [];
-
     setInvoiceDueThisMonth(true);
-    setHasTouchedInvoicePreviewDiscountSelection(false);
-    setInvoicePreviewSelectedComponentIds(defaultSelectedComponents.length > 0 ? defaultSelectedComponents : selectableComponents);
-    setInvoicePreviewSelectedDiscountIds(selectableDiscounts);
+    setHasTouchedInvoicePreviewDiscountSelection(true);
+    setInvoicePreviewSelectedComponentIds([]);
+    setInvoicePreviewSelectedDiscountIds([]);
+    setInvoiceTitleDraft(`Annual Fee Invoice (${deriveAcademicSessionFromMonth(currentInvoiceMonth)})`);
     setAssignmentError(null);
     setIsInvoicePreviewOpen(true);
   }
@@ -1291,10 +1340,11 @@ export function FinancePage() {
       const invoiceMonth = previewInvoiceDueDate.slice(0, 7);
       const invoiceSession = deriveAcademicSessionFromMonth(invoiceMonth);
       const fallbackTitle = `Annual Fee Invoice (${invoiceSession})`;
+      const titleToUse = invoiceTitleDraft.trim() || fallbackTitle;
 
       await createFeeInvoice({
         admissionNo: selectedStudent.admissionNo,
-        title: fallbackTitle,
+        title: titleToUse,
         amount: selectedInvoiceNetAmount,
         componentBreakdown: selectedInvoiceComponentBreakdown,
         dueDate: previewInvoiceDueDate
@@ -1341,10 +1391,7 @@ export function FinancePage() {
       return;
     }
 
-    if (!previousDueDate) {
-      setAssignmentError('Please select a due date for previous due.');
-      return;
-    }
+    const dueDate = getEndOfMonthDateValue(month);
 
     setPreviousDueSaving(true);
     setAssignmentError(null);
@@ -1354,7 +1401,7 @@ export function FinancePage() {
         admissionNo: selectedStudent.admissionNo,
         title: 'Previous Session Due',
         amount,
-        dueDate: previousDueDate
+        dueDate
       });
 
       await loadFinanceData(month);
@@ -1544,22 +1591,88 @@ export function FinancePage() {
     setPaymentError(null);
 
     try {
-      let remainingAllocationAmount = typedAmount;
-      const feeTypeAllocations = selectedBreakdownRows.length > 0
-        ? selectedBreakdownRows
-            .map((entry) => {
-              const allocationAmount = Math.min(entry.remainingAmount, remainingAllocationAmount);
-              remainingAllocationAmount -= allocationAmount;
-              return {
-                feeType: entry.feeType,
-                amount: allocationAmount
-              };
-            })
-            .filter((entry) => entry.amount > 0.009)
-        : selectedPaymentFeeTypes.map((feeType, index) => ({
-            feeType,
-            amount: index === 0 ? typedAmount : 0
-          })).filter((entry) => entry.amount > 0.009);
+      const feeTypeAllocations = (() => {
+        if (selectedBreakdownRows.length === 0) {
+          const equalShare = typedAmount / selectedPaymentFeeTypes.length;
+          return selectedPaymentFeeTypes
+            .map((feeType, index) => ({
+              feeType,
+              amount: index === selectedPaymentFeeTypes.length - 1 ? typedAmount - equalShare * index : equalShare
+            }))
+            .filter((entry) => entry.amount > 0.009);
+        }
+
+        const rowsBySelection = selectedPaymentFeeTypes
+          .map((feeType) => selectedBreakdownRows.find((entry) => entry.feeType === feeType))
+          .filter((entry): entry is (typeof selectedBreakdownRows)[number] => Boolean(entry));
+
+        const working = rowsBySelection.map((entry) => ({
+          feeType: entry.feeType,
+          capacity: entry.remainingAmount,
+          amount: 0
+        }));
+
+        let remainingAmount = typedAmount;
+
+        while (remainingAmount > 0.009) {
+          const activeRows = working.filter((entry) => entry.capacity - entry.amount > 0.009);
+          if (activeRows.length === 0) {
+            break;
+          }
+
+          const share = remainingAmount / activeRows.length;
+          let progressed = false;
+
+          activeRows.forEach((entry) => {
+            if (remainingAmount <= 0.009) {
+              return;
+            }
+
+            const available = Math.max(entry.capacity - entry.amount, 0);
+            if (available <= 0.009) {
+              return;
+            }
+
+            const allocationAmount = Math.min(share, available, remainingAmount);
+            if (allocationAmount <= 0.009) {
+              return;
+            }
+
+            entry.amount += allocationAmount;
+            remainingAmount -= allocationAmount;
+            progressed = true;
+          });
+
+          if (!progressed) {
+            break;
+          }
+        }
+
+        if (remainingAmount > 0.009) {
+          const fallbackRows = working
+            .filter((entry) => entry.capacity - entry.amount > 0.009)
+            .sort((left, right) => (right.capacity - right.amount) - (left.capacity - left.amount));
+
+          for (const entry of fallbackRows) {
+            if (remainingAmount <= 0.009) {
+              break;
+            }
+
+            const available = Math.max(entry.capacity - entry.amount, 0);
+            if (available <= 0.009) {
+              continue;
+            }
+
+            const allocationAmount = Math.min(available, remainingAmount);
+            entry.amount += allocationAmount;
+            remainingAmount -= allocationAmount;
+          }
+        }
+
+        return working
+          .map((entry) => ({ feeType: entry.feeType, amount: entry.amount }))
+          .filter((entry) => entry.amount > 0.009);
+      })();
 
       const combinedFeeTypeLabel = feeTypeAllocations.map((entry) => entry.feeType).join(', ');
 
@@ -1758,7 +1871,7 @@ export function FinancePage() {
             Selected: <span className="font-semibold">{selectedStudent ? `${selectedStudent.firstName} ${selectedStudent.lastName}` : 'None'}</span>
           </p>
           {selectedStudent ? <p>Class/Section: <span className="font-semibold">{selectedStudent.className}/{selectedStudent.section}</span></p> : null}
-          <p>Final Total: <span className="font-semibold">{formatCurrency(finalTotal)}</span></p>
+          <p>Final Yearly Due: <span className="font-semibold">{formatCurrency(finalTotal)}</span></p>
         </div>
       </div>
 
@@ -1783,7 +1896,7 @@ export function FinancePage() {
         </div>
       ))}
       <div className="flex items-center justify-between border-t border-slate-200/80 pt-2">
-        <span>Subtotal (Annualized)</span>
+        <span>Subtotal (Yearly Due)</span>
         <span className="font-medium text-brand-navy">{formatCurrency(subtotal)}</span>
       </div>
       <div className="flex items-center justify-between">
@@ -1820,7 +1933,7 @@ export function FinancePage() {
         <span className="font-medium text-brand-navy">- {formatCurrency(computedDiscountAmount)}</span>
       </div>
       <div className="flex items-center justify-between border-t border-slate-200/80 pt-2 text-base">
-        <span className="font-semibold text-brand-navy">Final Total</span>
+        <span className="font-semibold text-brand-navy">Final Yearly Due</span>
         <span className="text-xl font-bold text-brand-navy">{formatCurrency(finalTotal)}</span>
       </div>
     </div>
@@ -2107,10 +2220,10 @@ export function FinancePage() {
                   <option value="QUARTERLY">Quarterly</option>
                   <option value="YEARLY">Yearly</option>
                 </select>
-                <div className="rounded-md border border-brand-orange/40 bg-brand-orange/5 px-3 py-2 text-sm">Selected Annual Invoice Payable: <span className="font-semibold text-brand-navy">{formatCurrency(selectedMonthInvoicePayable)}</span></div>
+                <div className="rounded-md border border-brand-orange/40 bg-brand-orange/5 px-3 py-2 text-sm">Selected Monthly Due Payable: <span className="font-semibold text-brand-navy">{formatCurrency(selectedMonthInvoicePayable)}</span></div>
               </div>
 
-              <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                 <div className="flex items-center rounded-md border border-slate-200/80 bg-slate-50/50 px-3 transition-colors focus-within:border-brand-sky focus-within:bg-white">
                   <span className="mr-2 text-sm text-slate-500">₹</span>
                   <input
@@ -2123,12 +2236,6 @@ export function FinancePage() {
                     onChange={(event) => setPreviousDueAmount(event.target.value)}
                   />
                 </div>
-                <input
-                  className="rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
-                  type="date"
-                  value={previousDueDate}
-                  onChange={(event) => setPreviousDueDate(event.target.value)}
-                />
                 <button
                   type="button"
                   onClick={handleAddPreviousDue}
@@ -2139,7 +2246,7 @@ export function FinancePage() {
                 </button>
               </div>
 
-              <p className="text-xs text-slate-500">Use this for existing students with outstanding fees from earlier sessions/months. These dues remain pending and continue as carry-forward until paid.</p>
+              <p className="text-xs text-slate-500">Use this for existing students with outstanding fees from earlier sessions/months. Due date is automatically set to the selected month end, and the balance will carry forward until paid.</p>
 
               <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3">
                 <h5 className="font-semibold text-brand-navy">Selected Student Pending Invoices</h5>
@@ -2418,7 +2525,7 @@ export function FinancePage() {
 
       {isInvoicePreviewOpen && selectedStudent && selectedSavedAssignment ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-3xl rounded-xl border border-slate-200/80 bg-white p-5 shadow-xl">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-slate-200/80 bg-white p-5 shadow-xl">
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h4 className="text-lg font-semibold text-brand-navy">Invoice Preview</h4>
@@ -2444,9 +2551,16 @@ export function FinancePage() {
                 <p>
                   Class/Section: <span className="font-semibold text-brand-navy">{selectedStudent.className}/{selectedStudent.section}</span>
                 </p>
-                <p>
-                  Invoice Title: <span className="font-semibold text-brand-navy">Annual Fee Invoice ({deriveAcademicSessionFromMonth(previewInvoiceDueDate.slice(0, 7))})</span>
-                </p>
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Invoice Title</label>
+                  <input
+                    className="w-full rounded-md border border-slate-200/80 bg-white px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
+                    type="text"
+                    value={invoiceTitleDraft}
+                    onChange={(event) => setInvoiceTitleDraft(event.target.value)}
+                    placeholder={`Annual Fee Invoice (${deriveAcademicSessionFromMonth(previewInvoiceDueDate.slice(0, 7))})`}
+                  />
+                </div>
                 <p>
                   Billing Cycle: <span className="font-semibold text-brand-navy">{selectedSavedAssignment.billingCycle}</span>
                 </p>
@@ -2708,6 +2822,7 @@ export function FinancePage() {
                       <thead>
                         <tr className="border-b border-slate-100 bg-slate-50/80">
                           <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
+                          <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Monthly Due</th>
                           <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice Fee Amount</th>
                           <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Paid</th>
                           <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due</th>
@@ -2717,6 +2832,7 @@ export function FinancePage() {
                         {paymentFeeBreakdown.map((entry) => (
                           <tr key={`payment-breakdown-${entry.feeType}`} className="border-b border-slate-100">
                             <td className="px-3 py-2 text-slate-700">{entry.feeType}</td>
+                            <td className="px-3 py-2 text-slate-600">{formatCurrency(entry.monthlyPayable)}</td>
                             <td className="px-3 py-2 text-slate-600">{formatCurrency(entry.installmentPayable)}</td>
                             <td className="px-3 py-2 text-slate-600">{formatCurrency(entry.paidAmount)}</td>
                             <td className="px-3 py-2 font-semibold text-brand-navy">{formatCurrency(entry.remainingAmount)}</td>
@@ -2772,7 +2888,7 @@ export function FinancePage() {
                         {disabledOption ? (
                           <span className="text-xs font-semibold text-amber-700">Already paid</span>
                         ) : breakdownEntry ? (
-                          <span className="text-xs font-semibold text-brand-navy">Remaining: {formatCurrency(breakdownEntry.remainingAmount)}</span>
+                          <span className="text-xs font-semibold text-brand-navy">Monthly Due: {formatCurrency(breakdownEntry.monthlyPayable)} | Remaining: {formatCurrency(breakdownEntry.remainingAmount)}</span>
                         ) : null}
                       </label>
                     );

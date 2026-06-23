@@ -733,6 +733,151 @@ feesRouter.get('/fees/invoices', async (req: AuthenticatedRequest, res) => {
   }
 });
 
+feesRouter.get('/fees/invoices/:invoiceId', async (req: AuthenticatedRequest, res) => {
+  try {
+    const schoolId = req.auth!.schoolId;
+    let invoice: any;
+
+    try {
+      invoice = await prisma.feeInvoice.findFirst({
+        where: {
+          id: req.params.invoiceId,
+          student: {
+            schoolId
+          }
+        },
+        include: {
+          student: {
+            select: {
+              id: true,
+              admissionNo: true,
+              firstName: true,
+              lastName: true,
+              className: true,
+              section: true
+            }
+          },
+          payments: {
+            orderBy: {
+              createdAt: 'asc'
+            },
+            select: {
+              id: true,
+              amount: true,
+              paymentMethod: true,
+              feeType: true,
+              paymentDate: true,
+              feeMonth: true,
+              academicSession: true,
+              transactionId: true,
+              checkNumber: true,
+              dueAfterPayment: true,
+              createdAt: true
+            }
+          }
+        }
+      });
+    } catch (selectError) {
+      const rawSelectErrorMessage = selectError instanceof Error ? selectError.message : '';
+      const likelyLegacySchema =
+        rawSelectErrorMessage.includes('transactionId') ||
+        rawSelectErrorMessage.includes('checkNumber');
+
+      if (!likelyLegacySchema) {
+        throw selectError;
+      }
+
+      // Fallback query for deployments where DB migration for payment refs is not applied yet.
+      invoice = await prisma.feeInvoice.findFirst({
+        where: {
+          id: req.params.invoiceId,
+          student: {
+            schoolId
+          }
+        },
+        include: {
+          student: {
+            select: {
+              id: true,
+              admissionNo: true,
+              firstName: true,
+              lastName: true,
+              className: true,
+              section: true
+            }
+          },
+          payments: {
+            orderBy: {
+              createdAt: 'asc'
+            },
+            select: {
+              id: true,
+              amount: true,
+              paymentMethod: true,
+              feeType: true,
+              paymentDate: true,
+              feeMonth: true,
+              academicSession: true,
+              dueAfterPayment: true,
+              createdAt: true
+            }
+          }
+        }
+      });
+    }
+
+    if (!invoice) {
+      return res.status(404).json({ message: 'Fee invoice not found.' });
+    }
+
+    const amount = Number(invoice.amount);
+    const paidAmount = Number(invoice.paidAmount);
+
+    return res.json({
+      id: invoice.id,
+      title: invoice.title,
+      amount,
+      paidAmount,
+      due: Math.max(amount - paidAmount, 0),
+      dueDate: invoice.dueDate,
+      status: invoice.status,
+      createdAt: invoice.createdAt,
+      updatedAt: invoice.updatedAt,
+      componentBreakdown: parseInvoiceComponentSnapshot(invoice.componentSnapshot),
+      student: {
+        id: invoice.student.id,
+        admissionNo: invoice.student.admissionNo,
+        firstName: invoice.student.firstName,
+        lastName: invoice.student.lastName,
+        className: invoice.student.className,
+        section: invoice.student.section
+      },
+      payments: invoice.payments.map((payment: any) => ({
+        id: payment.id,
+        amount: Number(payment.amount),
+        paymentMethod: payment.paymentMethod,
+        feeType: payment.feeType,
+        paymentDate: payment.paymentDate,
+        feeMonth: payment.feeMonth,
+        academicSession: payment.academicSession,
+        transactionId: 'transactionId' in payment ? payment.transactionId : null,
+        checkNumber: 'checkNumber' in payment ? payment.checkNumber : null,
+        dueAfterPayment: Number(payment.dueAfterPayment),
+        createdAt: payment.createdAt
+      }))
+    });
+  } catch (error) {
+    const rawMessage = error instanceof Error ? error.message : '';
+    const message =
+      rawMessage.includes('transactionId') || rawMessage.includes('checkNumber')
+        ? 'Payment schema is out of sync with the database. Run migrations and restart the API server.'
+        : rawMessage || 'Unable to load fee invoice details.';
+
+    console.error('Unable to load fee invoice details', error);
+    return res.status(503).json({ message });
+  }
+});
+
 feesRouter.get('/fees/invoices/:invoiceId/download', async (req: AuthenticatedRequest, res) => {
   try {
     const schoolId = req.auth!.schoolId;
@@ -943,11 +1088,11 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
           return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string }) => entry.feeType === normalizedFeeType);
         }
 
-        if (requested.cadence === 'YEARLY') {
+        if (requested.cadence === 'YEARLY' || requested.cadence === 'MONTHLY') {
           return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string }) => entry.feeType === normalizedFeeType && entry.academicSession === currentAcademicSession);
         }
 
-        return false;
+        return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string }) => entry.feeType === normalizedFeeType && entry.academicSession === currentAcademicSession);
       });
 
       if (overlappingFeeTypes.length > 0) {

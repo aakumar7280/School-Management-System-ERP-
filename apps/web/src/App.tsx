@@ -1,7 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import { getSession } from './auth/session';
+import { clearSession, getSession } from './auth/session';
 import { AppRole, AuthSession } from './auth/types';
 import { MainLayout } from './layout/MainLayout';
 import { ClassesPage } from './pages/ClassesPage';
@@ -54,6 +54,42 @@ function canAccessParent(role: AppRole) {
 
 export default function App() {
   const [session, setSession] = useState<AuthSession | null>(() => getSession());
+  const idleTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!session) {
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+      return;
+    }
+
+    const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+
+    const resetIdleTimer = () => {
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+      }
+
+      idleTimerRef.current = window.setTimeout(() => {
+        clearSession();
+        setSession(null);
+      }, IDLE_TIMEOUT_MS);
+    };
+
+    const activityEvents: Array<keyof WindowEventMap> = ['mousemove', 'click'];
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, resetIdleTimer));
+    resetIdleTimer();
+
+    return () => {
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetIdleTimer));
+      if (idleTimerRef.current !== null) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
+  }, [session]);
 
   if (!session) {
     return (

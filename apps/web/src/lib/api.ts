@@ -374,6 +374,7 @@ export interface FinanceOverview {
     title: string;
     componentBreakdown?: Array<{
       feeType: string;
+      cadence?: 'MONTHLY' | 'YEARLY' | 'ONCE' | null;
       amount: number;
     }>;
     dueDate: string;
@@ -391,6 +392,7 @@ export interface FinanceOverview {
     createdAt?: string;
     componentBreakdown?: Array<{
       feeType: string;
+      cadence?: 'MONTHLY' | 'YEARLY' | 'ONCE' | null;
       amount: number;
     }>;
     dueDate: string;
@@ -497,6 +499,44 @@ export interface FeeInvoiceListItem {
     firstName: string;
     lastName: string;
   };
+}
+
+export interface FeeInvoiceDetail {
+  id: string;
+  title: string;
+  amount: number;
+  paidAmount: number;
+  due: number;
+  dueDate: string;
+  status: 'UNPAID' | 'PARTIAL' | 'PAID';
+  createdAt: string;
+  updatedAt: string;
+  componentBreakdown: Array<{
+    feeType: string;
+    cadence?: 'MONTHLY' | 'YEARLY' | 'ONCE' | null;
+    amount: number;
+  }>;
+  student: {
+    id: string;
+    admissionNo: string;
+    firstName: string;
+    lastName: string;
+    className: string;
+    section: string;
+  };
+  payments: Array<{
+    id: string;
+    amount: number;
+    paymentMethod: 'UPI' | 'CASH' | 'CHEQUE';
+    feeType: string | null;
+    paymentDate: string;
+    feeMonth: string | null;
+    academicSession: string | null;
+    transactionId: string | null;
+    checkNumber: string | null;
+    dueAfterPayment: number;
+    createdAt: string;
+  }>;
 }
 
 function getAuthHeader() {
@@ -821,6 +861,19 @@ export async function fetchFeeInvoices(): Promise<FeeInvoiceListItem[]> {
   if (!response.ok) {
     const data = await response.json().catch(() => ({ message: 'Failed to load fee invoices' }));
     throw new Error(data.message ?? 'Failed to load fee invoices');
+  }
+
+  return response.json();
+}
+
+export async function fetchFeeInvoiceById(invoiceId: string): Promise<FeeInvoiceDetail> {
+  const response = await fetch(`${API_BASE_URL}/fees/invoices/${invoiceId}`, {
+    headers: getAuthHeader()
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({ message: 'Failed to load fee invoice' }));
+    throw new Error(data.message ?? 'Failed to load fee invoice');
   }
 
   return response.json();

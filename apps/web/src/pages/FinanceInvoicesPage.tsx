@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { FinanceSectionNav } from '../components/FinanceSectionNav';
 import {
   deleteFeeInvoiceAsAdmin,
+  FeeInvoiceDetail,
   FeeInvoiceListItem,
+  fetchFeeInvoiceById,
   fetchFeeInvoices
 } from '../lib/api';
 
@@ -18,6 +20,9 @@ export function FinanceInvoicesPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
   const [downloadingList, setDownloadingList] = useState(false);
+  const [viewingInvoice, setViewingInvoice] = useState<FeeInvoiceDetail | null>(null);
+  const [viewingInvoiceLoading, setViewingInvoiceLoading] = useState(false);
+  const [viewingInvoiceRequestId, setViewingInvoiceRequestId] = useState<string | null>(null);
 
   const studentOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -125,6 +130,26 @@ export function FinanceInvoicesPage() {
     }
   }
 
+  async function handleViewInvoice(invoiceId: string) {
+    setViewingInvoiceRequestId(invoiceId);
+    setViewingInvoiceLoading(true);
+    setError(null);
+
+    try {
+      const invoice = await fetchFeeInvoiceById(invoiceId);
+      setViewingInvoice(invoice);
+    } catch (viewError) {
+      setError(viewError instanceof Error ? viewError.message : 'Failed to load invoice details');
+    } finally {
+      setViewingInvoiceLoading(false);
+      setViewingInvoiceRequestId(null);
+    }
+  }
+
+  function closeViewInvoiceModal() {
+    setViewingInvoice(null);
+  }
+
   useEffect(() => {
     loadData();
   }, []);
@@ -212,6 +237,15 @@ export function FinanceInvoicesPage() {
                       <div className="flex items-center justify-end gap-2">
                         <button
                           type="button"
+                          onClick={() => handleViewInvoice(invoice.id)}
+                          disabled={viewingInvoiceLoading}
+                          className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-semibold text-brand-navy hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          title="View invoice"
+                        >
+                          {viewingInvoiceLoading && viewingInvoiceRequestId === invoice.id ? 'Loading...' : 'View'}
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => handleDeleteInvoice(invoice)}
                           disabled={deletingInvoiceId === invoice.id}
                           className="rounded-md border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
@@ -229,6 +263,95 @@ export function FinanceInvoicesPage() {
           {!loading && filteredInvoices.length === 0 ? <p className="px-5 py-8 text-center text-sm text-slate-400">No invoices found.</p> : null}
         </div>
       </section>
+
+      {viewingInvoice ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-xl border border-slate-200/80 bg-white p-5 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h4 className="text-lg font-semibold text-brand-navy">Invoice Details</h4>
+                <p className="text-xs text-slate-500">{viewingInvoice.title}</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeViewInvoiceModal}
+                className="rounded-md border border-slate-200 px-3 py-1 text-sm text-brand-navy hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200/80 bg-slate-50/50 p-4 text-sm md:grid-cols-2">
+              <p>Student: <span className="font-semibold text-brand-navy">{viewingInvoice.student.firstName} {viewingInvoice.student.lastName}</span></p>
+              <p>Admission No: <span className="font-semibold text-brand-navy">{viewingInvoice.student.admissionNo}</span></p>
+              <p>Class/Section: <span className="font-semibold text-brand-navy">{viewingInvoice.student.className}/{viewingInvoice.student.section}</span></p>
+              <p>Status: <span className="font-semibold text-brand-navy">{viewingInvoice.status}</span></p>
+              <p>Amount: <span className="font-semibold text-brand-navy">{formatCurrency(viewingInvoice.amount)}</span></p>
+              <p>Paid: <span className="font-semibold text-brand-navy">{formatCurrency(viewingInvoice.paidAmount)}</span></p>
+              <p>Due: <span className="font-semibold text-brand-navy">{formatCurrency(viewingInvoice.due)}</span></p>
+              <p>Due Date: <span className="font-semibold text-brand-navy">{new Date(viewingInvoice.dueDate).toLocaleDateString()}</span></p>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-slate-200/80 bg-white">
+              <div className="border-b border-slate-100 px-4 py-3">
+                <h5 className="text-sm font-semibold text-brand-navy">Fee Components</h5>
+              </div>
+              <div className="max-h-56 overflow-auto">
+                <table className="min-w-full border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-100 bg-slate-50/80">
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Cadence</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {viewingInvoice.componentBreakdown.map((component) => (
+                      <tr key={`${viewingInvoice.id}-${component.feeType}-${component.cadence ?? 'none'}`} className="border-b border-slate-100">
+                        <td className="px-4 py-2 text-slate-700">{component.feeType}</td>
+                        <td className="px-4 py-2 text-slate-600">{component.cadence ?? '-'}</td>
+                        <td className="px-4 py-2 font-semibold text-brand-navy">{formatCurrency(component.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {viewingInvoice.componentBreakdown.length === 0 ? <p className="px-4 py-3 text-sm text-slate-500">No components found.</p> : null}
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-slate-200/80 bg-white">
+              <div className="border-b border-slate-100 px-4 py-3">
+                <h5 className="text-sm font-semibold text-brand-navy">Payments</h5>
+              </div>
+              <div className="max-h-64 overflow-auto">
+                <table className="min-w-full border-collapse text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-100 bg-slate-50/80">
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Date</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Method</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Amount</th>
+                      <th className="px-4 py-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Due After</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {viewingInvoice.payments.map((payment) => (
+                      <tr key={payment.id} className="border-b border-slate-100">
+                        <td className="px-4 py-2 text-slate-700">{new Date(payment.paymentDate).toLocaleDateString()}</td>
+                        <td className="px-4 py-2 text-slate-600">{payment.paymentMethod}</td>
+                        <td className="px-4 py-2 text-slate-600">{payment.feeType ?? '-'}</td>
+                        <td className="px-4 py-2 font-semibold text-brand-navy">{formatCurrency(payment.amount)}</td>
+                        <td className="px-4 py-2 text-slate-600">{formatCurrency(payment.dueAfterPayment)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {viewingInvoice.payments.length === 0 ? <p className="px-4 py-3 text-sm text-slate-500">No payments recorded for this invoice yet.</p> : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

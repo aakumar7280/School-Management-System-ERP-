@@ -56,7 +56,7 @@ type TeacherRow = {
 type FeePaymentRow = {
   id: string;
   amount: unknown;
-  paymentMethod: 'UPI' | 'CASH';
+  paymentMethod: 'UPI' | 'CASH' | 'CHEQUE';
   feeType: string | null;
   paymentDate: Date;
   feeMonth: string | null;
@@ -148,11 +148,11 @@ function deriveAcademicSessionFromFeeMonth(feeMonth: string) {
 
 function parseInvoiceComponentSnapshot(componentSnapshot: string | null | undefined) {
   if (!componentSnapshot) {
-    return [] as Array<{ feeType: string; amount: number }>;
+    return [] as Array<{ feeType: string; amount: number; cadence: 'MONTHLY' | 'YEARLY' | 'ONCE' | null }>;
   }
 
   try {
-    const parsed = JSON.parse(componentSnapshot) as Array<{ feeType?: string; amount?: number }>;
+    const parsed = JSON.parse(componentSnapshot) as Array<{ feeType?: string; amount?: number; cadence?: string | null }>;
     if (!Array.isArray(parsed)) {
       return [];
     }
@@ -160,12 +160,79 @@ function parseInvoiceComponentSnapshot(componentSnapshot: string | null | undefi
     return parsed
       .map((entry) => ({
         feeType: typeof entry.feeType === 'string' ? entry.feeType.trim() : '',
-        amount: Number(entry.amount ?? 0)
+        amount: Number(entry.amount ?? 0),
+        cadence:
+          entry.cadence === 'MONTHLY' || entry.cadence === 'YEARLY' || entry.cadence === 'ONCE'
+            ? entry.cadence
+            : null
       }))
       .filter((entry) => entry.feeType.length > 0 && Number.isFinite(entry.amount) && entry.amount > 0);
   } catch {
     return [];
   }
+}
+
+function getMonthKeyFromDate(date: Date) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function getMonthIndex(monthKey: string) {
+  const [yearPart, monthPart] = monthKey.split('-');
+  const year = Number(yearPart);
+  const month = Number(monthPart);
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+    return Number.NaN;
+  }
+
+  return year * 12 + (month - 1);
+}
+
+function computeScheduledBilledAmountByMonth(
+  invoice: Pick<InvoiceRow, 'amount' | 'componentSnapshot' | 'dueDate'>,
+  targetMonthKey: string
+) {
+  const totalInvoiceAmount = Number(invoice.amount);
+  if (!Number.isFinite(totalInvoiceAmount) || totalInvoiceAmount <= 0) {
+    return 0;
+  }
+
+  const snapshot = parseInvoiceComponentSnapshot(invoice.componentSnapshot);
+  if (snapshot.length === 0) {
+    return totalInvoiceAmount;
+  }
+
+  const dueMonthKey = getMonthKeyFromDate(invoice.dueDate);
+  const dueMonthIndex = getMonthIndex(dueMonthKey);
+  const targetMonthIndex = getMonthIndex(targetMonthKey);
+
+  if (!Number.isFinite(dueMonthIndex) || !Number.isFinite(targetMonthIndex)) {
+    return totalInvoiceAmount;
+  }
+
+  const elapsedMonths = targetMonthIndex - dueMonthIndex + 1;
+  if (elapsedMonths <= 0) {
+    return 0;
+  }
+
+  const scheduledAmount = snapshot.reduce((sum, component) => {
+    const componentAmount = Number(component.amount);
+    if (!Number.isFinite(componentAmount) || componentAmount <= 0) {
+      return sum;
+    }
+
+    if (component.cadence === 'ONCE' || component.cadence === null) {
+      return sum + componentAmount;
+    }
+
+    const monthlyInstallment =
+      component.cadence === 'YEARLY' ? componentAmount : componentAmount / 12;
+
+    const cappedAmount = Math.min(componentAmount, monthlyInstallment * elapsedMonths);
+    return sum + Math.max(cappedAmount, 0);
+  }, 0);
+
+  return Math.min(totalInvoiceAmount, Math.max(scheduledAmount, 0));
 }
 
 financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) => {
@@ -364,6 +431,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
       })
     ]);
 
+    const dueEvaluationMonth = view === 'year' ? `${year}-12` : month;
     let totalBilled = 0;
     let totalCollected = 0;
 
@@ -371,7 +439,8 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
       .map((invoice: InvoiceRow) => {
         const amount = Number(invoice.amount);
         const paid = Number(invoice.paidAmount);
-        const due = Math.max(amount - paid, 0);
+        const billedToDate = computeScheduledBilledAmountByMonth(invoice, dueEvaluationMonth);
+        const due = Math.max(billedToDate - paid, 0);
 
         return {
           id: invoice.id,
@@ -409,11 +478,11 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
 
     const periodDueStudents = (invoices as InvoiceRow[])
       .map((invoice: InvoiceRow) => {
-        const amount = Number(invoice.amount);
+        const billedToDate = computeScheduledBilledAmountByMonth(invoice, dueEvaluationMonth);
         const paid = Number(invoice.paidAmount);
-        const due = Math.max(amount - paid, 0);
+        const due = Math.max(billedToDate - paid, 0);
 
-        totalBilled += amount;
+        totalBilled += billedToDate;
         totalCollected += paid;
 
         return {
@@ -589,7 +658,8 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
       periodInvoices: (invoices as InvoiceRow[]).map((invoice: InvoiceRow) => {
         const amount = Number(invoice.amount);
         const paidAmount = Number(invoice.paidAmount);
-        const due = Math.max(amount - paidAmount, 0);
+        const billedToDate = computeScheduledBilledAmountByMonth(invoice, dueEvaluationMonth);
+        const due = Math.max(billedToDate - paidAmount, 0);
 
         return {
           id: invoice.id,
