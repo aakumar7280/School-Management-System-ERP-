@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
-import { ClassAttendanceRecord, ClassOverview, fetchClassAttendance, fetchClassesOverview } from '../lib/api';
+import { ClassAttendanceRecord, ClassOverview, downloadClassStudentList, fetchClassAttendance, fetchClassesOverview } from '../lib/api';
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -15,6 +15,7 @@ export function ClassesPage() {
   const [selectedClass, setSelectedClass] = useState('');
   const [selectedSection, setSelectedSection] = useState('');
   const [attendanceDate, setAttendanceDate] = useState(today());
+  const [downloadingClassList, setDownloadingClassList] = useState(false);
 
   useEffect(() => {
     async function loadOverview() {
@@ -66,6 +67,24 @@ export function ClassesPage() {
     }
   }
 
+  async function handleDownloadClassList() {
+    if (!selectedClass || !selectedSection) {
+      setError('Select a class and section first.');
+      return;
+    }
+
+    setDownloadingClassList(true);
+    setError(null);
+
+    try {
+      await downloadClassStudentList({ className: selectedClass, section: selectedSection });
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : 'Failed to download class list');
+    } finally {
+      setDownloadingClassList(false);
+    }
+  }
+
   useEffect(() => {
     if (selectedClass && selectedSection) {
       loadAttendance();
@@ -84,6 +103,16 @@ export function ClassesPage() {
       <div>
         <h2 className="text-2xl font-bold text-slate-800">Classes</h2>
         <p className="mt-1 text-sm text-slate-500">View class-wise students, teachers, and attendance.</p>
+      </div>
+      <div>
+        <button
+          type="button"
+          onClick={handleDownloadClassList}
+          disabled={downloadingClassList || !selectedClass || !selectedSection}
+          className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-brand-navy shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {downloadingClassList ? 'Downloading...' : 'Download Class List'}
+        </button>
       </div>
       {error ? (
         <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">

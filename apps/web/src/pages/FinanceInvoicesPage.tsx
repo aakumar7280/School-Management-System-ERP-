@@ -87,13 +87,14 @@ export function FinanceInvoicesPage() {
 
     try {
       const rows = [
-        ['Created', 'Admission No', 'Student', 'Invoice', 'Amount', 'Paid', 'Due', 'Due Date', 'Status'],
+        ['Created', 'Admission No', 'Student', 'Invoice No', 'Invoice', 'Amount', 'Paid', 'Due', 'Due Date', 'Status'],
         ...filteredInvoices.map((invoice) => {
           const due = Math.max(invoice.amount - invoice.paidAmount, 0);
           return [
             new Date(invoice.createdAt).toISOString(),
             invoice.student.admissionNo,
             `${invoice.student.firstName} ${invoice.student.lastName}`,
+            invoice.invoiceNumber ?? '',
             invoice.title,
             String(invoice.amount),
             String(invoice.paidAmount),
@@ -204,6 +205,7 @@ export function FinanceInvoicesPage() {
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Created</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Admission No</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Student</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Invoice No.</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Amount</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Paid</th>
@@ -221,6 +223,7 @@ export function FinanceInvoicesPage() {
                     <td className="px-4 py-3 text-slate-500">{new Date(invoice.createdAt).toLocaleDateString()}</td>
                     <td className="px-4 py-3 font-mono text-xs">{invoice.student.admissionNo}</td>
                     <td className="px-4 py-3 font-medium text-slate-700">{invoice.student.firstName} {invoice.student.lastName}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-600">{invoice.invoiceNumber ?? '-'}</td>
                     <td className="px-4 py-3">{invoice.title}</td>
                     <td className="px-4 py-3">{formatCurrency(invoice.amount)}</td>
                     <td className="px-4 py-3 text-emerald-600">{formatCurrency(invoice.paidAmount)}</td>
@@ -282,6 +285,7 @@ export function FinanceInvoicesPage() {
             </div>
 
             <div className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200/80 bg-slate-50/50 p-4 text-sm md:grid-cols-2">
+              <p>Invoice No: <span className="font-semibold text-brand-navy">{viewingInvoice.invoiceNumber ?? '-'}</span></p>
               <p>Student: <span className="font-semibold text-brand-navy">{viewingInvoice.student.firstName} {viewingInvoice.student.lastName}</span></p>
               <p>Admission No: <span className="font-semibold text-brand-navy">{viewingInvoice.student.admissionNo}</span></p>
               <p>Class/Section: <span className="font-semibold text-brand-navy">{viewingInvoice.student.className}/{viewingInvoice.student.section}</span></p>

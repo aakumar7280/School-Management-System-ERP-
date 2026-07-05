@@ -8,6 +8,7 @@ import { ClassesPage } from './pages/ClassesPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { AdminSettingsPage } from './pages/AdminSettingsPage';
 import { FinanceDashboardPage } from './pages/FinanceDashboardPage';
+import { FinanceDuesPage } from './pages/FinanceDuesPage';
 import { FinanceInvoicesPage } from './pages/FinanceInvoicesPage';
 import { FinancePage } from './pages/FinancePage';
 import { FinanceSalariesPage } from './pages/FinanceSalariesPage';
@@ -135,6 +136,10 @@ export default function App() {
         <Route
           path="/admin/finance/invoices"
           element={canAccessAdmin(session.user.role) ? <FinanceInvoicesPage /> : <Navigate to={defaultPortal} replace />}
+        />
+        <Route
+          path="/admin/finance/dues"
+          element={canAccessAdmin(session.user.role) ? <FinanceDuesPage /> : <Navigate to={defaultPortal} replace />}
         />
         <Route
           path="/admin/finance/invoices/*"

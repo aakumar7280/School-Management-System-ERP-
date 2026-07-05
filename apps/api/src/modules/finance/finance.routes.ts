@@ -9,6 +9,7 @@ financeRouter.use(requireStaffAuth);
 
 type InvoiceRow = {
   id: string;
+  invoiceNumber: string | null;
   title: string;
   componentSnapshot: string | null;
   amount: unknown;
@@ -65,6 +66,7 @@ type FeePaymentRow = {
   createdAt: Date;
   invoice: {
     id: string;
+    invoiceNumber: string | null;
     title: string;
     amount: unknown;
     paidAmount: unknown;
@@ -85,6 +87,39 @@ type StudentFeeCreditRow = {
   studentId: string;
   balance: unknown;
 };
+
+function computeAssignmentSummaryTotal(assignment: {
+  components: Array<{ amount: unknown; cadence: 'MONTHLY' | 'YEARLY' | 'ONCE' }>;
+} | null | undefined, discount: { type: 'FLAT' | 'PERCENTAGE'; value: unknown } | null | undefined) {
+  if (!assignment) {
+    return 0;
+  }
+
+  const subtotal = assignment.components.reduce((sum, component) => {
+    const amount = Number(component.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return sum;
+    }
+
+    if (component.cadence === 'MONTHLY') {
+      return sum + amount * 12;
+    }
+
+    return sum + amount;
+  }, 0);
+
+  if (!discount) {
+    return subtotal;
+  }
+
+  const discountValue = Number(discount.value);
+  if (!Number.isFinite(discountValue) || discountValue <= 0) {
+    return subtotal;
+  }
+
+  const discountAmount = discount.type === 'PERCENTAGE' ? (subtotal * discountValue) / 100 : discountValue;
+  return Math.max(subtotal - Math.min(Math.max(discountAmount, 0), subtotal), 0);
+}
 
 type FinanceView = 'month' | 'year';
 
@@ -357,6 +392,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
           invoice: {
             select: {
               id: true,
+              invoiceNumber: true,
               title: true,
               amount: true,
               paidAmount: true,
@@ -399,6 +435,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
           invoice: {
             select: {
               id: true,
+              invoiceNumber: true,
               title: true,
               amount: true,
               paidAmount: true,
@@ -444,6 +481,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
 
         return {
           id: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
           title: invoice.title,
           createdAt: invoice.createdAt.toISOString(),
           componentBreakdown: parseInvoiceComponentSnapshot(invoice.componentSnapshot),
@@ -592,6 +630,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
             academicSession: payment.academicSession,
             invoice: {
               id: payment.invoice.id,
+              invoiceNumber: payment.invoice.invoiceNumber,
               title: payment.invoice.title,
               amount: invoiceAmount,
               paidAmount: invoicePaidAmount,
@@ -628,6 +667,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
               academicSession: deriveAcademicSessionFromFeeMonth(feeMonth),
               invoice: {
                 id: invoice.id,
+                invoiceNumber: invoice.invoiceNumber,
                 title: invoice.title,
                 amount: invoiceAmount,
                 paidAmount: invoicePaidAmount,
@@ -663,6 +703,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
 
         return {
           id: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
           title: invoice.title,
           componentBreakdown: parseInvoiceComponentSnapshot(invoice.componentSnapshot),
           dueDate: invoice.dueDate.toISOString(),
@@ -704,6 +745,92 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
   } catch (error) {
     console.error('Unable to load finance overview', error);
     return res.status(503).json({ message: 'Unable to load finance overview.' });
+  }
+});
+
+financeRouter.get('/finance/dues-report', async (req: AuthenticatedRequest, res) => {
+  try {
+    const schoolId = req.auth!.schoolId;
+    const students = await prisma.student.findMany({
+      where: { schoolId },
+      orderBy: [{ className: 'asc' }, { section: 'asc' }, { firstName: 'asc' }, { lastName: 'asc' }],
+      select: {
+        id: true,
+        admissionNo: true,
+        firstName: true,
+        lastName: true,
+        className: true,
+        section: true,
+        isActive: true,
+        feeAssignment: {
+          select: {
+            billingCycle: true,
+            components: {
+              select: {
+                amount: true,
+                cadence: true
+              }
+            }
+          }
+        },
+        discount: {
+          select: {
+            type: true,
+            value: true
+          }
+        },
+        feeInvoices: {
+          select: {
+            amount: true,
+            paidAmount: true
+          }
+        }
+      }
+    });
+
+    const rows = students.map((student: any) => {
+      const totalFeesSummary = computeAssignmentSummaryTotal(student.feeAssignment, student.discount);
+      const invoiceGeneratedAmount = student.feeInvoices.reduce((sum: number, invoice: any) => sum + Number(invoice.amount), 0);
+      const invoicePaidAmount = student.feeInvoices.reduce((sum: number, invoice: any) => sum + Number(invoice.paidAmount), 0);
+      const totalPending = Math.max(invoiceGeneratedAmount - invoicePaidAmount, 0);
+
+      return {
+        studentId: student.id,
+        admissionNo: student.admissionNo,
+        studentName: `${student.firstName} ${student.lastName}`,
+        className: student.className,
+        section: student.section,
+        isActive: student.isActive,
+        totalFeesSummary,
+        invoiceGeneratedAmount,
+        invoicePaidAmount,
+        totalPending
+      };
+    });
+
+    const totals = rows.reduce(
+      (sum: { totalFeesSummary: number; invoiceGeneratedAmount: number; invoicePaidAmount: number; totalPending: number }, row: any) => ({
+        totalFeesSummary: sum.totalFeesSummary + row.totalFeesSummary,
+        invoiceGeneratedAmount: sum.invoiceGeneratedAmount + row.invoiceGeneratedAmount,
+        invoicePaidAmount: sum.invoicePaidAmount + row.invoicePaidAmount,
+        totalPending: sum.totalPending + row.totalPending
+      }),
+      {
+        totalFeesSummary: 0,
+        invoiceGeneratedAmount: 0,
+        invoicePaidAmount: 0,
+        totalPending: 0
+      }
+    );
+
+    return res.json({
+      rows,
+      totals,
+      generatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Unable to load finance dues report', error);
+    return res.status(503).json({ message: 'Unable to load finance dues report.' });
   }
 });
 

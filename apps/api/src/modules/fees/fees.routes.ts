@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { prisma } from '../../config/prisma.js';
 import { AuthenticatedRequest, requireStaffAuth } from '../../middleware/auth.js';
+import { InvoiceService } from './invoice.service.js';
 
 const feesRouter = Router();
 
@@ -275,14 +276,30 @@ async function ensureAdvanceCreditLedgerInvoice(tx: any, studentId: string) {
 
   const dueDate = new Date();
   dueDate.setHours(12, 0, 0, 0);
+  const metadata = await InvoiceService.buildCreateData(tx, {
+    dueDate,
+    subtotal: 0,
+    discount: 0,
+    total: 0,
+    paymentStatus: 'PAID'
+  });
 
   const createdLedger = await tx.feeInvoice.create({
     data: {
       studentId,
       title: 'Advance Credit Ledger',
+      invoiceNumber: metadata.invoiceNumber,
+      academicYearId: metadata.academicYearId,
+      invoiceSequence: metadata.invoiceSequence,
+      billingPeriod: metadata.billingPeriod,
+      invoiceDate: metadata.invoiceDate,
+      subtotal: metadata.subtotal,
+      discount: metadata.discount,
+      total: metadata.total,
       amount: 0,
       paidAmount: 0,
-      dueDate,
+      dueDate: metadata.dueDate,
+      paymentStatus: metadata.paymentStatus,
       status: 'PAID'
     },
     select: {
@@ -835,6 +852,7 @@ feesRouter.get('/fees/invoices/:invoiceId', async (req: AuthenticatedRequest, re
 
     return res.json({
       id: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
       title: invoice.title,
       amount,
       paidAmount,
@@ -1125,15 +1143,36 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
       const { appliedAmount } = await consumeStudentCredit(tx, student.id, invoiceAmount);
       const paidAmount = Math.max(appliedAmount, 0);
       const status = resolveInvoiceStatus(invoiceAmount, paidAmount);
+      const subtotal = Math.max(
+        (payload.componentBreakdown ?? []).reduce((sum, component) => sum + Number(component.amount), 0),
+        invoiceAmount
+      );
+      const discount = Math.max(subtotal - invoiceAmount, 0);
+      const metadata = await InvoiceService.buildCreateData(tx, {
+        dueDate,
+        subtotal,
+        discount,
+        total: invoiceAmount,
+        paymentStatus: status
+      });
 
       const createdInvoice = await tx.feeInvoice.create({
         data: {
           studentId: student.id,
+          invoiceNumber: metadata.invoiceNumber,
+          academicYearId: metadata.academicYearId,
+          invoiceSequence: metadata.invoiceSequence,
+          billingPeriod: metadata.billingPeriod,
+          invoiceDate: metadata.invoiceDate,
           title: payload.title,
           componentSnapshot: serializeInvoiceComponentSnapshot(payload.componentBreakdown),
+          subtotal: metadata.subtotal,
+          discount: metadata.discount,
+          total: metadata.total,
           amount: invoiceAmount,
           paidAmount,
-          dueDate,
+          dueDate: metadata.dueDate,
+          paymentStatus: metadata.paymentStatus,
           status
         }
       });
@@ -1282,14 +1321,32 @@ feesRouter.post('/fees/invoices/bulk', async (req: AuthenticatedRequest, res) =>
         const { appliedAmount } = await consumeStudentCredit(tx, assignment.studentId, annualAmount);
         const paidAmount = Math.max(appliedAmount, 0);
         const status = resolveInvoiceStatus(annualAmount, paidAmount);
+        const subtotal = Math.max(normalizedAssignment.subtotal, annualAmount);
+        const discount = Math.max(subtotal - annualAmount, 0);
+        const metadata = await InvoiceService.buildCreateData(tx, {
+          dueDate,
+          subtotal,
+          discount,
+          total: annualAmount,
+          paymentStatus: status
+        });
 
         const createdInvoice = await tx.feeInvoice.create({
           data: {
             studentId: assignment.studentId,
+            invoiceNumber: metadata.invoiceNumber,
+            academicYearId: metadata.academicYearId,
+            invoiceSequence: metadata.invoiceSequence,
+            billingPeriod: metadata.billingPeriod,
+            invoiceDate: metadata.invoiceDate,
             title: annualInvoiceTitle,
+            subtotal: metadata.subtotal,
+            discount: metadata.discount,
+            total: metadata.total,
             amount: annualAmount,
             paidAmount,
-            dueDate,
+            dueDate: metadata.dueDate,
+            paymentStatus: metadata.paymentStatus,
             status
           }
         });
@@ -1436,6 +1493,7 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
         where: { id: invoice.id },
         data: {
           paidAmount: nextPaidAmount,
+          paymentStatus: nextDue <= 0 ? 'PAID' : 'PARTIAL',
           status: nextDue <= 0 ? 'PAID' : 'PARTIAL'
         }
       });
@@ -1631,6 +1689,7 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
           where: { id: invoice.id },
           data: {
             paidAmount: nextPaidAmount,
+            paymentStatus: nextDue <= 0 ? 'PAID' : 'PARTIAL',
             status: nextDue <= 0 ? 'PAID' : 'PARTIAL'
           }
         });
@@ -1795,6 +1854,7 @@ feesRouter.delete('/fees/transactions', async (req: AuthenticatedRequest, res) =
           },
           data: {
             paidAmount: 0,
+            paymentStatus: 'UNPAID',
             status: 'UNPAID'
           }
         });

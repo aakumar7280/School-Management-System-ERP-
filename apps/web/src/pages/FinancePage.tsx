@@ -197,6 +197,7 @@ export function FinancePage() {
     'Tuition Fee',
     'Transport Fee',
     'Admission Fee',
+    'Abacus',
     'TC Fee',
     'Meals',
     'Uniform',
@@ -862,16 +863,22 @@ export function FinancePage() {
     }
 
     const targetSession = deriveAcademicSessionFromMonth(previewInvoiceMonth);
-    const sessionTitle = `Annual Fee Invoice (${targetSession})`;
+    const periodInvoices = overview?.periodInvoices ?? [];
+    const dueInvoices = overview?.dueStudents ?? [];
 
-    const feeTypes = filteredDueStudents
-      .filter((invoice) => invoice.title === sessionTitle)
+    const allStudentInvoices = [
+      ...periodInvoices.filter((invoice) => invoice.student.id === selectedStudent.id),
+      ...dueInvoices.filter((invoice) => invoice.student.id === selectedStudent.id)
+    ];
+
+    const feeTypes = allStudentInvoices
+      .filter((invoice) => deriveAcademicSessionFromMonth(invoice.dueDate.slice(0, 7)) === targetSession)
       .flatMap((invoice) => invoice.componentBreakdown ?? [])
       .map((entry) => entry.feeType.trim().toLowerCase())
       .filter((feeType) => feeType.length > 0);
 
     return new Set(feeTypes);
-  }, [filteredDueStudents, previewInvoiceMonth, selectedStudent]);
+  }, [overview?.dueStudents, overview?.periodInvoices, previewInvoiceMonth, selectedStudent]);
 
   const invoicePreviewComponents = useMemo(() => {
     if (!selectedSavedAssignment) {
@@ -2256,6 +2263,7 @@ export function FinancePage() {
                   <table className="min-w-full border-collapse text-left text-xs">
                     <thead>
                       <tr className="border-b border-slate-100 bg-slate-50/80">
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice No.</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due Date</th>
@@ -2268,6 +2276,7 @@ export function FinancePage() {
 
                         return (
                           <tr key={`pending-invoice-${invoice.id}`} className="border-b border-slate-100">
+                            <td className="px-3 py-2 font-mono text-[11px] text-slate-600">{invoice.invoiceNumber ?? '-'}</td>
                             <td className="px-3 py-2 text-slate-700">{invoice.title}</td>
                             <td className="px-3 py-2 font-semibold text-brand-navy">{formatCurrency(invoice.due)}</td>
                             <td className="px-3 py-2 text-slate-600">{new Date(invoice.dueDate).toLocaleDateString()}</td>
@@ -2319,6 +2328,7 @@ export function FinancePage() {
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Admission No</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Student</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Class</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Invoice No.</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Due</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Due Date</th>
@@ -2343,6 +2353,7 @@ export function FinancePage() {
                     <td className="px-4 py-3">{invoice.student.admissionNo}</td>
                     <td className="px-4 py-3">{invoice.student.name}</td>
                     <td className="px-4 py-3">{invoice.student.className} / {invoice.student.section}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-600">{invoice.invoiceNumber ?? '-'}</td>
                     <td className="px-4 py-3">{invoice.title}</td>
                     <td className="px-4 py-3 font-semibold text-brand-navy">{formatCurrency(invoice.due)}</td>
                     <td className="px-4 py-3">{new Date(invoice.dueDate).toLocaleDateString()}</td>
@@ -2408,6 +2419,7 @@ export function FinancePage() {
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Paid On</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Fee Month</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Session</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Invoice No.</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Fee Type</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Mode</th>
@@ -2425,6 +2437,7 @@ export function FinancePage() {
                   </td>
                   <td className="px-4 py-3">{transaction.feeMonth ?? '-'}</td>
                   <td className="px-4 py-3">{transaction.academicSession ?? '-'}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-slate-600">{transaction.invoice.invoiceNumber ?? '-'}</td>
                   <td className="px-4 py-3">{transaction.invoice.title}</td>
                   <td className="px-4 py-3">
                     {(transaction.feeType ?? '').toLowerCase().includes('advance applied')
@@ -2765,6 +2778,7 @@ export function FinancePage() {
                     <thead>
                       <tr className="border-b border-slate-100 bg-slate-50/80">
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Select</th>
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice No.</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due Date</th>
@@ -2791,6 +2805,7 @@ export function FinancePage() {
                                 className="h-4 w-4 border-slate-300 text-brand-navy focus:ring-brand-sky"
                               />
                             </td>
+                            <td className="px-3 py-2 font-mono text-[11px] text-slate-600">{invoice.invoiceNumber ?? '-'}</td>
                             <td className="px-3 py-2 text-slate-700">{invoice.title}</td>
                             <td className="px-3 py-2 font-semibold text-brand-navy">{formatCurrency(invoice.due)}</td>
                             <td className="px-3 py-2 text-slate-600">{new Date(invoice.dueDate).toLocaleDateString()}</td>

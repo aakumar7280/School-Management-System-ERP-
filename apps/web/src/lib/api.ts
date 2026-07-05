@@ -358,6 +358,7 @@ export interface FinanceOverview {
     checkNumber?: string | null;
     invoice: {
       id: string;
+      invoiceNumber?: string | null;
       title: string;
       amount: number;
       paidAmount: number;
@@ -371,6 +372,7 @@ export interface FinanceOverview {
   }>;
   periodInvoices: Array<{
     id: string;
+    invoiceNumber?: string | null;
     title: string;
     componentBreakdown?: Array<{
       feeType: string;
@@ -388,6 +390,7 @@ export interface FinanceOverview {
   }>;
   dueStudents: Array<{
     id: string;
+    invoiceNumber?: string | null;
     title: string;
     createdAt?: string;
     componentBreakdown?: Array<{
@@ -485,8 +488,31 @@ export interface StudentFeeAssignment {
   };
 }
 
+export interface FinanceDuesReport {
+  rows: Array<{
+    studentId: string;
+    admissionNo: string;
+    studentName: string;
+    className: string;
+    section: string;
+    isActive: boolean;
+    totalFeesSummary: number;
+    invoiceGeneratedAmount: number;
+    invoicePaidAmount: number;
+    totalPending: number;
+  }>;
+  totals: {
+    totalFeesSummary: number;
+    invoiceGeneratedAmount: number;
+    invoicePaidAmount: number;
+    totalPending: number;
+  };
+  generatedAt: string;
+}
+
 export interface FeeInvoiceListItem {
   id: string;
+  invoiceNumber?: string | null;
   title: string;
   amount: number;
   paidAmount: number;
@@ -503,6 +529,7 @@ export interface FeeInvoiceListItem {
 
 export interface FeeInvoiceDetail {
   id: string;
+  invoiceNumber?: string | null;
   title: string;
   amount: number;
   paidAmount: number;
@@ -1240,6 +1267,36 @@ export async function downloadFeeInvoiceAsAdmin(invoiceId: string): Promise<void
   URL.revokeObjectURL(fileUrl);
 }
 
+export async function downloadClassStudentList(params: { className: string; section: string }): Promise<void> {
+  const search = new URLSearchParams({
+    className: params.className,
+    section: params.section
+  });
+
+  const response = await fetch(`${API_BASE_URL}/classes/export?${search.toString()}`, {
+    headers: getAuthHeader()
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({ message: 'Failed to download class student list' }));
+    throw new Error(data.message ?? 'Failed to download class student list');
+  }
+
+  const blob = await response.blob();
+  const contentDisposition = response.headers.get('content-disposition') ?? '';
+  const matchedFilename = contentDisposition.match(/filename="?([^";]+)"?/i);
+  const fileName = matchedFilename?.[1] ?? `${params.className}-${params.section}-students.xlsx`;
+
+  const fileUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = fileUrl;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(fileUrl);
+}
+
 export async function clearFeeTransactionsAsAdmin(): Promise<{ message: string }> {
   const response = await fetch(`${API_BASE_URL}/fees/transactions`, {
     method: 'DELETE',
@@ -1274,6 +1331,19 @@ export async function fetchFinanceOverview(
   if (!response.ok) {
     const data = await response.json().catch(() => ({ message: 'Failed to load finance overview' }));
     throw new Error(data.message ?? 'Failed to load finance overview');
+  }
+
+  return response.json();
+}
+
+export async function fetchFinanceDuesReport(): Promise<FinanceDuesReport> {
+  const response = await fetch(`${API_BASE_URL}/finance/dues-report`, {
+    headers: getAuthHeader()
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({ message: 'Failed to load finance dues report' }));
+    throw new Error(data.message ?? 'Failed to load finance dues report');
   }
 
   return response.json();
