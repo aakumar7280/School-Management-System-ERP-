@@ -18,6 +18,7 @@ export function FinanceInvoicesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [studentSearchQuery, setStudentSearchQuery] = useState('');
   const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
   const [downloadingList, setDownloadingList] = useState(false);
   const [viewingInvoice, setViewingInvoice] = useState<FeeInvoiceDetail | null>(null);
@@ -41,12 +42,12 @@ export function FinanceInvoicesPage() {
     return invoices.filter((invoice) => invoice.student.admissionNo === selectedAdmissionNo);
   }, [invoices, selectedAdmissionNo]);
 
-  async function loadData() {
+  async function loadData(searchQuery?: string) {
     setLoading(true);
     setError(null);
 
     try {
-      const invoicesResponse = await fetchFeeInvoices();
+      const invoicesResponse = await fetchFeeInvoices(searchQuery);
       setInvoices(invoicesResponse);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Failed to load invoices');
@@ -68,7 +69,7 @@ export function FinanceInvoicesPage() {
     try {
       const response = await deleteFeeInvoiceAsAdmin(invoice.id);
       setMessage(response.message);
-      await loadData();
+      await loadData(studentSearchQuery);
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete invoice');
     } finally {
@@ -163,6 +164,33 @@ export function FinanceInvoicesPage() {
           <p className="mt-1 text-sm text-slate-500">Invoice records for all students</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <input
+            className="w-72 rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
+            type="text"
+            placeholder="Search student name or admission no"
+            value={studentSearchQuery}
+            onChange={(event) => setStudentSearchQuery(event.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => loadData(studentSearchQuery)}
+            disabled={loading}
+            className="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Search
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setStudentSearchQuery('');
+              setSelectedAdmissionNo('all');
+              void loadData('');
+            }}
+            disabled={loading}
+            className="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Clear
+          </button>
           <select
             className="rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
             value={selectedAdmissionNo}
@@ -195,7 +223,9 @@ export function FinanceInvoicesPage() {
             >
               {downloadingList ? 'Downloading...' : 'Download Invoices'}
             </button>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">Latest 50</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">
+              {studentSearchQuery.trim().length > 0 ? 'Search Results' : 'Latest 50'}
+            </span>
           </div>
         </div>
         <div className="overflow-x-auto">

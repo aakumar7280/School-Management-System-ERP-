@@ -894,8 +894,14 @@ export async function createFeeInvoice(payload: {
   return response.json();
 }
 
-export async function fetchFeeInvoices(): Promise<FeeInvoiceListItem[]> {
-  const response = await fetch(`${API_BASE_URL}/fees/invoices`, {
+export async function fetchFeeInvoices(searchQuery?: string): Promise<FeeInvoiceListItem[]> {
+  const search = new URLSearchParams();
+  const normalizedQuery = searchQuery?.trim() ?? '';
+  if (normalizedQuery.length > 0) {
+    search.set('q', normalizedQuery);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/fees/invoices${search.toString() ? `?${search.toString()}` : ''}`, {
     headers: getAuthHeader()
   });
 

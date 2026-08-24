@@ -725,14 +725,33 @@ feesRouter.get('/fees/teachers', async (req: AuthenticatedRequest, res) => {
 feesRouter.get('/fees/invoices', async (req: AuthenticatedRequest, res) => {
   try {
     const schoolId = req.auth!.schoolId;
+    const rawQuery = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const queryTerms = rawQuery
+      .split(/\s+/)
+      .map((term) => term.trim())
+      .filter((term) => term.length > 0)
+
+    const studentSearchFilter = queryTerms.length > 0
+      ? {
+          AND: queryTerms.map((term) => ({
+            OR: [
+              { admissionNo: { contains: term, mode: 'insensitive' as const } },
+              { firstName: { contains: term, mode: 'insensitive' as const } },
+              { lastName: { contains: term, mode: 'insensitive' as const } }
+            ]
+          }))
+        }
+      : undefined;
+
     const invoices = await prisma.feeInvoice.findMany({
       where: {
         student: {
-          schoolId
+          schoolId,
+          ...(studentSearchFilter ?? {})
         }
       },
       orderBy: { createdAt: 'desc' },
-      take: 50,
+      ...(queryTerms.length > 0 ? {} : { take: 50 }),
       include: {
         student: {
           select: {
