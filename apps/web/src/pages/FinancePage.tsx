@@ -3,6 +3,7 @@ import { ReactNode, useEffect, useMemo, useState } from 'react';
 import {
   clearFeeTransactionsAsAdmin,
   createFeeInvoice,
+  deleteFeeTransactionAsAdmin,
   deleteFeeInvoiceAsAdmin,
   fetchFeeStudents,
   fetchFinanceOverview,
@@ -178,9 +179,11 @@ export function FinancePage() {
   const [paymentAcademicSession, setPaymentAcademicSession] = useState(() => deriveAcademicSessionFromMonth(getCurrentMonthValue()));
   const [paymentTransactionId, setPaymentTransactionId] = useState('');
   const [paymentCheckNumber, setPaymentCheckNumber] = useState('');
+  const [paymentReceiptNumber, setPaymentReceiptNumber] = useState('');
   const [paymentSaving, setPaymentSaving] = useState(false);
   const [paymentModalMode, setPaymentModalMode] = useState<'regular' | 'advance'>('regular');
   const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null);
+  const [deletingTransactionId, setDeletingTransactionId] = useState<string | null>(null);
   const [clearingTransactions, setClearingTransactions] = useState(false);
   const [paymentMessage, setPaymentMessage] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
@@ -1438,6 +1441,7 @@ export function FinancePage() {
     setPaymentAcademicSession(deriveAcademicSessionFromMonth(targetMonth));
     setPaymentTransactionId('');
     setPaymentCheckNumber('');
+    setPaymentReceiptNumber('');
     setPaymentError(null);
     setPaymentMessage(null);
   }
@@ -1451,6 +1455,7 @@ export function FinancePage() {
     setPaymentAcademicSession(deriveAcademicSessionFromMonth(getCurrentMonthValue()));
     setPaymentTransactionId('');
     setPaymentCheckNumber('');
+    setPaymentReceiptNumber('');
     setPaymentModalMode('regular');
     setSelectedPaymentFeeTypes([]);
   }
@@ -1490,6 +1495,7 @@ export function FinancePage() {
       setPaymentAcademicSession(deriveAcademicSessionFromMonth(targetMonth));
       setPaymentTransactionId('');
       setPaymentCheckNumber('');
+      setPaymentReceiptNumber('');
       return;
     }
 
@@ -1500,6 +1506,7 @@ export function FinancePage() {
     setPaymentAcademicSession(deriveAcademicSessionFromMonth(month));
     setPaymentTransactionId('');
     setPaymentCheckNumber('');
+    setPaymentReceiptNumber('');
   }
 
   function handleTogglePaymentFeeType(nextFeeType: string, checked: boolean) {
@@ -1600,6 +1607,49 @@ export function FinancePage() {
     try {
       const feeTypeAllocations = (() => {
         if (selectedBreakdownRows.length === 0) {
+          const weightedSelection = selectedPaymentFeeTypes
+            .map((feeType) => {
+              const weight = (selectedSavedAssignment?.components ?? [])
+                .filter((component) => normalizeFeeTypeKey(component.feeType) === normalizeFeeTypeKey(feeType))
+                .reduce((sum, component) => {
+                  const baseAmount = Number(component.amount || 0);
+                  if (!Number.isFinite(baseAmount) || baseAmount <= 0) {
+                    return sum;
+                  }
+
+                  // For monthly components, derive annualized weight to match invoice-generation math.
+                  const annualizedAmount = component.cadence === 'MONTHLY' ? baseAmount * 12 : baseAmount;
+                  return sum + annualizedAmount;
+                }, 0);
+
+              return {
+                feeType,
+                weight
+              };
+            })
+            .filter((entry) => entry.weight > 0.009);
+
+          if (weightedSelection.length > 0) {
+            const totalWeight = weightedSelection.reduce((sum, entry) => sum + entry.weight, 0);
+            let remainingAmount = typedAmount;
+
+            return weightedSelection
+              .map((entry, index) => {
+                const isLast = index === weightedSelection.length - 1;
+                const proportionalAmount = isLast
+                  ? remainingAmount
+                  : Number(((typedAmount * entry.weight) / totalWeight).toFixed(2));
+                const normalizedAmount = Math.max(Math.min(proportionalAmount, remainingAmount), 0);
+                remainingAmount = Math.max(remainingAmount - normalizedAmount, 0);
+
+                return {
+                  feeType: entry.feeType,
+                  amount: normalizedAmount
+                };
+              })
+              .filter((entry) => entry.amount > 0.009);
+          }
+
           const equalShare = typedAmount / selectedPaymentFeeTypes.length;
           return selectedPaymentFeeTypes
             .map((feeType, index) => ({
@@ -1612,6 +1662,20 @@ export function FinancePage() {
         const rowsBySelection = selectedPaymentFeeTypes
           .map((feeType) => selectedBreakdownRows.find((entry) => entry.feeType === feeType))
           .filter((entry): entry is (typeof selectedBreakdownRows)[number] => Boolean(entry));
+
+        const selectedRemainingTotal = rowsBySelection.reduce((sum, entry) => sum + entry.remainingAmount, 0);
+        const selectedAllAvailableFeeTypes = rowsBySelection.length === paymentFeeBreakdown.length && paymentFeeBreakdown.length > 0;
+        const payingSelectedDueFully = Math.abs(typedAmount - selectedRemainingTotal) <= 0.009;
+
+        // Full payment across all selected fee types should follow their exact due split.
+        if (selectedAllAvailableFeeTypes && payingSelectedDueFully) {
+          return rowsBySelection
+            .map((entry) => ({
+              feeType: entry.feeType,
+              amount: entry.remainingAmount
+            }))
+            .filter((entry) => entry.amount > 0.009);
+        }
 
         const working = rowsBySelection.map((entry) => ({
           feeType: entry.feeType,
@@ -1682,6 +1746,7 @@ export function FinancePage() {
       })();
 
       const combinedFeeTypeLabel = feeTypeAllocations.map((entry) => entry.feeType).join(', ');
+      const normalizedReceiptNumber = paymentReceiptNumber.trim();
 
       await payFeeInvoiceAsAdmin(invoice.id, {
         amount: typedAmount,
@@ -1691,7 +1756,7 @@ export function FinancePage() {
         paymentDate,
         feeMonth: paymentFeeMonth,
         academicSession: paymentAcademicSession.trim() || undefined,
-        transactionId: paymentTransactionId.trim() || undefined,
+        transactionId: paymentMethod === 'CASH' ? normalizedReceiptNumber || undefined : paymentTransactionId.trim() || undefined,
         checkNumber: paymentCheckNumber.trim() || undefined
       });
 
@@ -1745,6 +1810,8 @@ export function FinancePage() {
         )
       ).join(', ');
 
+      const normalizedReceiptNumber = paymentReceiptNumber.trim();
+
       const response = await recordStudentAdvancePaymentAsAdmin(selectedStudent.id, {
         amount: typedAmount,
         paymentMethod,
@@ -1752,7 +1819,7 @@ export function FinancePage() {
         paymentDate,
         feeMonth: paymentFeeMonth,
         academicSession: paymentAcademicSession.trim() || undefined,
-        transactionId: paymentTransactionId.trim() || undefined,
+        transactionId: paymentMethod === 'CASH' ? normalizedReceiptNumber || undefined : paymentTransactionId.trim() || undefined,
         checkNumber: paymentCheckNumber.trim() || undefined,
         sourceInvoiceId:
           typeof activePaymentInvoiceId === 'string' && activePaymentInvoiceId.trim().length > 0
@@ -1815,6 +1882,25 @@ export function FinancePage() {
       setPaymentError(clearError instanceof Error ? clearError.message : 'Failed to clear transaction log');
     } finally {
       setClearingTransactions(false);
+    }
+  }
+
+  async function handleDeleteTransaction(transactionId: string) {
+    const shouldDelete = window.confirm('Delete this transaction log entry? Invoice balances will be recalculated automatically.');
+    if (!shouldDelete) return;
+
+    setDeletingTransactionId(transactionId);
+    setPaymentError(null);
+    setPaymentMessage(null);
+
+    try {
+      await deleteFeeTransactionAsAdmin(transactionId);
+      await loadFinanceData(month);
+      setPaymentMessage('Transaction deleted successfully.');
+    } catch (deleteError) {
+      setPaymentError(deleteError instanceof Error ? deleteError.message : 'Failed to delete transaction');
+    } finally {
+      setDeletingTransactionId(null);
     }
   }
 
@@ -2426,30 +2512,46 @@ export function FinancePage() {
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Paid</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Due After Payment</th>
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-400">Action</th>
               </tr>
             </thead>
             <tbody>
-              {filteredTransactions.map((transaction) => (
-                <tr key={transaction.id} className="border-b border-slate-100 table-row-hover">
-                  <td className="px-4 py-3">
-                    <p>{new Date(transaction.paymentDate).toLocaleDateString()}</p>
-                    <p className="text-xs text-slate-400">Logged: {new Date(transaction.createdAt).toLocaleString()}</p>
-                  </td>
-                  <td className="px-4 py-3">{transaction.feeMonth ?? '-'}</td>
-                  <td className="px-4 py-3">{transaction.academicSession ?? '-'}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-slate-600">{transaction.invoice.invoiceNumber ?? '-'}</td>
-                  <td className="px-4 py-3">{transaction.invoice.title}</td>
-                  <td className="px-4 py-3">
-                    {(transaction.feeType ?? '').toLowerCase().includes('advance applied')
-                      ? 'Advance Deducted From Balance'
-                      : transaction.feeType ?? 'General'}
-                  </td>
-                  <td className="px-4 py-3">{transaction.paymentMethod}</td>
-                  <td className="px-4 py-3 font-semibold text-brand-navy">{formatCurrency(transaction.amount)}</td>
-                  <td className="px-4 py-3">{formatCurrency(transaction.invoice.due)}</td>
-                  <td className="px-4 py-3">{transaction.invoice.status}</td>
-                </tr>
-              ))}
+              {filteredTransactions.map((transaction) => {
+                const isAdvanceEntry = isAdvanceTransactionFeeType(transaction.feeType);
+
+                return (
+                  <tr key={transaction.id} className="border-b border-slate-100 table-row-hover">
+                    <td className="px-4 py-3">
+                      <p>{new Date(transaction.paymentDate).toLocaleDateString()}</p>
+                      <p className="text-xs text-slate-400">Logged: {new Date(transaction.createdAt).toLocaleString()}</p>
+                    </td>
+                    <td className="px-4 py-3">{transaction.feeMonth ?? '-'}</td>
+                    <td className="px-4 py-3">{transaction.academicSession ?? '-'}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-slate-600">{transaction.invoice.invoiceNumber ?? '-'}</td>
+                    <td className="px-4 py-3">{transaction.invoice.title}</td>
+                    <td className="px-4 py-3">
+                      {(transaction.feeType ?? '').toLowerCase().includes('advance applied')
+                        ? 'Advance Deducted From Balance'
+                        : transaction.feeType ?? 'General'}
+                    </td>
+                    <td className="px-4 py-3">{transaction.paymentMethod}</td>
+                    <td className="px-4 py-3 font-semibold text-brand-navy">{formatCurrency(transaction.amount)}</td>
+                    <td className="px-4 py-3">{formatCurrency(transaction.invoice.due)}</td>
+                    <td className="px-4 py-3">{transaction.invoice.status}</td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteTransaction(transaction.id)}
+                        disabled={isAdvanceEntry || deletingTransactionId === transaction.id}
+                        className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        title={isAdvanceEntry ? 'Advance-related entries cannot be deleted individually.' : 'Delete this transaction'}
+                      >
+                        {deletingTransactionId === transaction.id ? 'Deleting...' : 'Delete'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {!financeLoading && filteredTransactions.length === 0 ? <p className="pt-3 text-sm text-slate-500">No fee transactions found for selected period.</p> : null}
@@ -2880,6 +2982,17 @@ export function FinancePage() {
                   />
                 </div>
               ) : null}
+
+              <div>
+                <p className="mb-1 text-xs text-slate-500">Receipt No.</p>
+                <input
+                  className="w-full rounded-md border border-slate-200/80 bg-slate-50/50 px-3 py-2 text-sm transition-colors focus:border-brand-sky focus:bg-white"
+                  type="text"
+                  value={paymentReceiptNumber}
+                  onChange={(event) => setPaymentReceiptNumber(event.target.value)}
+                  placeholder="Enter manual receipt number"
+                />
+              </div>
 
               <div className="md:col-span-2">
                 <p className="mb-1 text-xs text-slate-500">Fee Types Paid</p>

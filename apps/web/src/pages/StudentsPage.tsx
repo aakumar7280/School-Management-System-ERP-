@@ -3,12 +3,13 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   AdminStudentProfile,
   createStudent,
-  downloadFeeInvoiceAsAdmin,
   deleteStudent,
+  downloadFeeInvoiceAsAdmin,
   fetchAcademicStructure,
   fetchAdminStudentProfile,
   fetchStudents,
   GradeSetting,
+  restoreStudent,
   Student,
   updateAdminStudentProfile,
   updateStudent
@@ -74,6 +75,7 @@ export function StudentsPage() {
   const [showFullDetails, setShowFullDetails] = useState(false);
   const [brokenPhotoIds, setBrokenPhotoIds] = useState<Record<string, boolean>>({});
   const [deletingStudentId, setDeletingStudentId] = useState<string | null>(null);
+  const [restoringStudentId, setRestoringStudentId] = useState<string | null>(null);
   const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<string | null>(null);
   const [studentListMode, setStudentListMode] = useState<'active' | 'inactive'>('active');
   const [deleteDialogStudent, setDeleteDialogStudent] = useState<Student | null>(null);
@@ -238,6 +240,29 @@ export function StudentsPage() {
       setError(deleteError instanceof Error ? deleteError.message : `Failed to ${modeLabel} student`);
     } finally {
       setDeletingStudentId(null);
+    }
+  }
+
+  async function handleRestoreStudent(student: Student) {
+    setRestoringStudentId(student.id);
+    setError(null);
+    setMessage(null);
+
+    try {
+      await restoreStudent(student.id);
+
+      if (selectedStudent?.id === student.id) {
+        setSelectedStudent(null);
+        setShowFullDetails(false);
+        setStudentProfile(null);
+      }
+
+      await loadStudents('inactive');
+      setMessage('Student restored to active list successfully.');
+    } catch (restoreError) {
+      setError(restoreError instanceof Error ? restoreError.message : 'Failed to restore student');
+    } finally {
+      setRestoringStudentId(null);
     }
   }
 
@@ -850,19 +875,36 @@ export function StudentsPage() {
                 <td className="px-4 py-3">{student.section}</td>
                 <td className="px-4 py-3">{student.guardianPhone}</td>
                 <td className="px-4 py-3 text-right">
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openDeleteDialog(student);
-                    }}
-                    disabled={deletingStudentId === student.id}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                    aria-label={`${studentListMode === 'active' ? 'Delete' : 'Permanently delete'} ${student.firstName} ${student.lastName}`}
-                    title={studentListMode === 'active' ? 'Delete student' : 'Permanently delete student'}
-                  >
-                    {deletingStudentId === student.id ? '…' : '×'}
-                  </button>
+                  <div className="inline-flex items-center gap-2">
+                    {studentListMode === 'inactive' ? (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleRestoreStudent(student);
+                        }}
+                        disabled={restoringStudentId === student.id}
+                        className="rounded-md border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        title="Restore student to active list"
+                      >
+                        {restoringStudentId === student.id ? 'Restoring...' : 'Restore'}
+                      </button>
+                    ) : null}
+
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openDeleteDialog(student);
+                      }}
+                      disabled={deletingStudentId === student.id}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-red-200 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label={`${studentListMode === 'active' ? 'Delete' : 'Permanently delete'} ${student.firstName} ${student.lastName}`}
+                      title={studentListMode === 'active' ? 'Delete student' : 'Permanently delete student'}
+                    >
+                      {deletingStudentId === student.id ? '…' : '×'}
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}

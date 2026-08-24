@@ -551,4 +551,40 @@ studentsRouter.delete('/students/:id', async (req: AuthenticatedRequest, res) =>
   }
 });
 
+studentsRouter.patch('/students/:id/restore', async (req: AuthenticatedRequest, res) => {
+  try {
+    const schoolId = req.auth!.schoolId;
+
+    const existing = await prisma.student.findFirst({
+      where: {
+        id: req.params.id,
+        schoolId
+      },
+      select: {
+        id: true,
+        isActive: true
+      }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: 'Student not found.' });
+    }
+
+    if (existing.isActive) {
+      return res.json({ message: 'Student is already active.' });
+    }
+
+    await prisma.student.update({
+      where: { id: existing.id },
+      data: {
+        isActive: true
+      }
+    });
+
+    return res.json({ message: 'Student restored successfully.' });
+  } catch {
+    return res.status(400).json({ message: 'Unable to restore student.' });
+  }
+});
+
 export { studentsRouter };

@@ -684,6 +684,20 @@ export async function deleteStudent(studentId: string, mode: 'soft' | 'hard' = '
   return response.json();
 }
 
+export async function restoreStudent(studentId: string): Promise<{ message: string }> {
+  const response = await fetch(`${API_BASE_URL}/students/${studentId}/restore`, {
+    method: 'PATCH',
+    headers: getAuthHeader()
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({ message: 'Failed to restore student' }));
+    throw new Error(data.message ?? 'Failed to restore student');
+  }
+
+  return response.json();
+}
+
 export async function fetchAdminStudentProfile(studentId: string): Promise<AdminStudentProfile> {
   const response = await fetch(`${API_BASE_URL}/students/${studentId}/profile`, {
     headers: getAuthHeader()
@@ -1306,6 +1320,20 @@ export async function clearFeeTransactionsAsAdmin(): Promise<{ message: string }
   if (!response.ok) {
     const data = await response.json().catch(() => ({ message: 'Failed to clear transaction log' }));
     throw new Error(data.message ?? 'Failed to clear transaction log');
+  }
+
+  return response.json();
+}
+
+export async function deleteFeeTransactionAsAdmin(transactionId: string): Promise<{ message: string }> {
+  const response = await fetch(`${API_BASE_URL}/fees/transactions/${transactionId}`, {
+    method: 'DELETE',
+    headers: getAuthHeader()
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({ message: 'Failed to delete transaction' }));
+    throw new Error(data.message ?? 'Failed to delete transaction');
   }
 
   return response.json();

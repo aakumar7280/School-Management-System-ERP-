@@ -1078,6 +1078,7 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
       }
 
       const currentAcademicSession = deriveAcademicSessionFromDate(dueDate);
+      const currentFeeMonth = deriveFeeMonthFromDate(dueDate);
 
       const existingAnnualInvoices = await prisma.feeInvoice.findMany({
         where: {
@@ -1095,7 +1096,8 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
           parseInvoiceComponentSnapshot(invoice.componentSnapshot).map((entry: { feeType: string; cadence: string | null }) => ({
             feeType: entry.feeType.trim().toLowerCase(),
             cadence: entry.cadence as InvoiceComponentSnapshotEntry['cadence'],
-            academicSession: deriveAcademicSessionFromDate(invoice.dueDate)
+            academicSession: deriveAcademicSessionFromDate(invoice.dueDate),
+            feeMonth: deriveFeeMonthFromDate(invoice.dueDate)
           }))
       );
 
@@ -1103,14 +1105,18 @@ feesRouter.post('/fees/invoices', async (req: AuthenticatedRequest, res) => {
         const normalizedFeeType = requested.feeType.toLowerCase();
 
         if (requested.cadence === 'ONCE') {
-          return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string }) => entry.feeType === normalizedFeeType);
+          return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string; feeMonth: string }) => entry.feeType === normalizedFeeType);
         }
 
-        if (requested.cadence === 'YEARLY' || requested.cadence === 'MONTHLY') {
-          return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string }) => entry.feeType === normalizedFeeType && entry.academicSession === currentAcademicSession);
+        if (requested.cadence === 'YEARLY') {
+          return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string; feeMonth: string }) => entry.feeType === normalizedFeeType && entry.academicSession === currentAcademicSession);
         }
 
-        return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string }) => entry.feeType === normalizedFeeType && entry.academicSession === currentAcademicSession);
+        if (requested.cadence === 'MONTHLY') {
+          return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string; feeMonth: string }) => entry.feeType === normalizedFeeType && entry.feeMonth === currentFeeMonth);
+        }
+
+        return existingSnapshotRows.some((entry: { feeType: string; cadence: InvoiceComponentSnapshotEntry['cadence']; academicSession: string; feeMonth: string }) => entry.feeType === normalizedFeeType && entry.academicSession === currentAcademicSession);
       });
 
       if (overlappingFeeTypes.length > 0) {
@@ -1820,6 +1826,69 @@ feesRouter.delete('/fees/invoices/:invoiceId', async (req: AuthenticatedRequest,
     return res.json({ message: 'Fee invoice deleted successfully.' });
   } catch {
     return res.status(400).json({ message: 'Unable to delete fee invoice.' });
+  }
+});
+
+feesRouter.delete('/fees/transactions/:transactionId', async (req: AuthenticatedRequest, res) => {
+  try {
+    const schoolId = req.auth!.schoolId;
+
+    const payment = await prisma.feePayment.findFirst({
+      where: {
+        id: req.params.transactionId,
+        invoice: {
+          student: {
+            schoolId
+          }
+        }
+      },
+      include: {
+        invoice: {
+          select: {
+            id: true,
+            amount: true,
+            paidAmount: true
+          }
+        }
+      }
+    });
+
+    if (!payment) {
+      return res.status(404).json({ message: 'Transaction not found.' });
+    }
+
+    const normalizedFeeType = (payment.feeType ?? '').toLowerCase();
+    if (normalizedFeeType.includes('advance')) {
+      return res.status(400).json({
+        message: 'Advance-related transactions cannot be deleted individually. Use dedicated advance adjustments instead.'
+      });
+    }
+
+    const invoiceAmount = Number(payment.invoice.amount);
+    const invoicePaidAmount = Number(payment.invoice.paidAmount);
+    const paymentAmount = Number(payment.amount);
+    const nextPaidAmount = Math.max(invoicePaidAmount - paymentAmount, 0);
+    const nextDue = Math.max(invoiceAmount - nextPaidAmount, 0);
+    const nextStatus = nextDue <= 0 ? 'PAID' : nextPaidAmount > 0 ? 'PARTIAL' : 'UNPAID';
+
+    await prisma.$transaction(async (tx: any) => {
+      await tx.feePayment.delete({
+        where: { id: payment.id }
+      });
+
+      await tx.feeInvoice.update({
+        where: { id: payment.invoice.id },
+        data: {
+          paidAmount: nextPaidAmount,
+          paymentStatus: nextStatus,
+          status: nextStatus
+        }
+      });
+    });
+
+    return res.json({ message: 'Transaction deleted successfully.' });
+  } catch {
+    return res.status(400).json({ message: 'Unable to delete transaction.' });
   }
 });
 
