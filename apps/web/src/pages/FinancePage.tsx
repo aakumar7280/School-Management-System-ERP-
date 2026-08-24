@@ -416,20 +416,6 @@ export function FinancePage() {
       .sort((left, right) => right.remainingAmount - left.remainingAmount);
   }, [activePaymentInvoice, filteredTransactions, selectedSavedAssignment]);
 
-  const configuredCadenceByFeeType = useMemo(() => {
-    const cadenceByFeeType = new Map<string, FeeComponentCadence>();
-    (selectedSavedAssignment?.components ?? []).forEach((component) => {
-      const key = normalizeFeeTypeKey(component.feeType);
-      if (!key) {
-        return;
-      }
-
-      cadenceByFeeType.set(key, component.cadence as FeeComponentCadence);
-    });
-
-    return cadenceByFeeType;
-  }, [selectedSavedAssignment]);
-
   const paidAmountByFeeType = useMemo(() => {
     const totals = new Map<string, number>();
 
@@ -453,29 +439,12 @@ export function FinancePage() {
     return totals;
   }, [filteredTransactions]);
 
-  const blockedPaidNonMonthlyFeeTypeSet = useMemo(() => {
-    const blocked = new Set<string>();
-
-    configuredCadenceByFeeType.forEach((cadence, feeTypeKey) => {
-      if (cadence === 'MONTHLY') {
-        return;
-      }
-
-      const paidAmount = paidAmountByFeeType.get(feeTypeKey) ?? 0;
-      if (paidAmount > 0.009) {
-        blocked.add(feeTypeKey);
-      }
-    });
-
-    return blocked;
-  }, [configuredCadenceByFeeType, paidAmountByFeeType]);
-
   const paymentFeeTypeOptions = useMemo(() => {
-    const filterBlockedFeeTypes = (items: string[]) =>
-      items.filter((item) => item.trim().length > 0 && !blockedPaidNonMonthlyFeeTypeSet.has(normalizeFeeTypeKey(item)));
+    const normalizeFeeTypes = (items: string[]) =>
+      items.filter((item) => item.trim().length > 0);
 
     if (paymentFeeBreakdown.length > 0) {
-      return filterBlockedFeeTypes(Array.from(new Set(paymentFeeBreakdown.map((item) => item.feeType))));
+      return normalizeFeeTypes(Array.from(new Set(paymentFeeBreakdown.map((item) => item.feeType))));
     }
 
     if (activePaymentInvoice) {
@@ -484,22 +453,22 @@ export function FinancePage() {
         .filter((transaction) => transaction.invoice.id === activePaymentInvoice.id)
         .flatMap((transaction) => extractFeeTypeParts(transaction.feeType));
 
-      const preferred = filterBlockedFeeTypes(Array.from(new Set([...selectedPaymentFeeTypes, paymentFeeType, ...invoiceSnapshotFeeTypes, ...existingInvoiceFeeTypes])));
+      const preferred = normalizeFeeTypes(Array.from(new Set([...selectedPaymentFeeTypes, paymentFeeType, ...invoiceSnapshotFeeTypes, ...existingInvoiceFeeTypes])));
       if (preferred.length > 0) {
         return preferred;
       }
 
       const assignmentFeeTypes = selectedSavedAssignment?.components.map((component) => component.feeType) ?? [];
-      const fallbackFromAssignment = filterBlockedFeeTypes(Array.from(new Set(assignmentFeeTypes)));
+      const fallbackFromAssignment = normalizeFeeTypes(Array.from(new Set(assignmentFeeTypes)));
       if (fallbackFromAssignment.length > 0) {
         return fallbackFromAssignment;
       }
 
-      return filterBlockedFeeTypes(Array.from(new Set(feeTypeOptions)));
+      return normalizeFeeTypes(Array.from(new Set(feeTypeOptions)));
     }
 
-    return filterBlockedFeeTypes(Array.from(new Set([...selectedPaymentFeeTypes, paymentFeeType, ...feeTypeOptions])));
-  }, [activePaymentInvoice, blockedPaidNonMonthlyFeeTypeSet, feeTypeOptions, filteredTransactions, paymentFeeBreakdown, paymentFeeType, selectedPaymentFeeTypes, selectedSavedAssignment]);
+    return normalizeFeeTypes(Array.from(new Set([...selectedPaymentFeeTypes, paymentFeeType, ...feeTypeOptions])));
+  }, [activePaymentInvoice, feeTypeOptions, filteredTransactions, paymentFeeBreakdown, paymentFeeType, selectedPaymentFeeTypes, selectedSavedAssignment]);
 
   useEffect(() => {
     if (paymentFeeTypeOptions.length === 0) {
@@ -674,7 +643,7 @@ export function FinancePage() {
     const components = selectedSavedAssignment.components
       .map((component) => {
         const baseAmount = Number(component.amount || 0);
-        const monthlyPayable = baseAmount;
+        const monthlyPayable = component.cadence === 'MONTHLY' ? baseAmount : 0;
 
         return {
           id: component.id,
@@ -766,12 +735,19 @@ export function FinancePage() {
       return currentMonthDueFromGeneratedInvoices;
     }
 
+    // Unpaid invoices already carry forward cadence-aware scheduled dues month by month.
+    // Do not re-project assignment dues on top of those balances.
+    if (carryForwardDueStudents.length > 0) {
+      return 0;
+    }
+
     if (hasCurrentMonthPaymentActivity) {
       return 0;
     }
 
     return previewSelectedCurrentMonthPayable;
   }, [
+    carryForwardDueStudents.length,
     currentMonthDueFromGeneratedInvoices,
     hasCurrentMonthInvoiceRecord,
     hasCurrentMonthPaymentActivity,
@@ -866,22 +842,66 @@ export function FinancePage() {
     }
 
     const targetSession = deriveAcademicSessionFromMonth(previewInvoiceMonth);
+    const targetMonth = previewInvoiceMonth;
     const periodInvoices = overview?.periodInvoices ?? [];
     const dueInvoices = overview?.dueStudents ?? [];
+    const assignmentCadenceByFeeType = new Map<string, FeeComponentCadence>();
+
+    (selectedSavedAssignment?.components ?? []).forEach((component) => {
+      const key = normalizeFeeTypeKey(component.feeType);
+      if (!key) {
+        return;
+      }
+
+      assignmentCadenceByFeeType.set(key, component.cadence as FeeComponentCadence);
+    });
 
     const allStudentInvoices = [
       ...periodInvoices.filter((invoice) => invoice.student.id === selectedStudent.id),
       ...dueInvoices.filter((invoice) => invoice.student.id === selectedStudent.id)
-    ];
+    ].filter((invoice, index, invoices) => invoices.findIndex((item) => item.id === invoice.id) === index);
 
-    const feeTypes = allStudentInvoices
-      .filter((invoice) => deriveAcademicSessionFromMonth(invoice.dueDate.slice(0, 7)) === targetSession)
-      .flatMap((invoice) => invoice.componentBreakdown ?? [])
-      .map((entry) => entry.feeType.trim().toLowerCase())
-      .filter((feeType) => feeType.length > 0);
+    const blockedFeeTypes = new Set<string>();
 
-    return new Set(feeTypes);
-  }, [overview?.dueStudents, overview?.periodInvoices, previewInvoiceMonth, selectedStudent]);
+    allStudentInvoices.forEach((invoice) => {
+      const invoiceMonth = invoice.dueDate.slice(0, 7);
+      const invoiceSession = deriveAcademicSessionFromMonth(invoiceMonth);
+
+      (invoice.componentBreakdown ?? []).forEach((entry) => {
+        const normalizedFeeType = normalizeFeeTypeKey(entry.feeType);
+        if (!normalizedFeeType) {
+          return;
+        }
+
+        const resolvedCadence = (entry.cadence as FeeComponentCadence | null | undefined) ?? assignmentCadenceByFeeType.get(normalizedFeeType) ?? null;
+
+        if (resolvedCadence === 'ONCE') {
+          blockedFeeTypes.add(normalizedFeeType);
+          return;
+        }
+
+        if (resolvedCadence === 'YEARLY') {
+          if (invoiceSession === targetSession) {
+            blockedFeeTypes.add(normalizedFeeType);
+          }
+          return;
+        }
+
+        if (resolvedCadence === 'MONTHLY') {
+          if (invoiceMonth === targetMonth) {
+            blockedFeeTypes.add(normalizedFeeType);
+          }
+          return;
+        }
+
+        if (invoiceSession === targetSession) {
+          blockedFeeTypes.add(normalizedFeeType);
+        }
+      });
+    });
+
+    return blockedFeeTypes;
+  }, [overview?.dueStudents, overview?.periodInvoices, previewInvoiceMonth, selectedSavedAssignment, selectedStudent]);
 
   const invoicePreviewComponents = useMemo(() => {
     if (!selectedSavedAssignment) {
@@ -2999,7 +3019,7 @@ export function FinancePage() {
                 <div className="max-h-40 overflow-auto rounded-md border border-slate-200/80 bg-slate-50/50 p-2">
                   {paymentFeeTypeOptions.map((option) => {
                     const breakdownEntry = paymentFeeBreakdown.find((entry) => entry.feeType === option);
-                    const disabledOption = blockedPaidNonMonthlyFeeTypeSet.has(normalizeFeeTypeKey(option));
+                    const disabledOption = Boolean(breakdownEntry && breakdownEntry.remainingAmount <= 0.009);
 
                     return (
                       <label key={`payment-fee-type-${option}`} className={`mb-1 flex items-center justify-between gap-3 rounded-md border border-transparent bg-white px-3 py-2 text-sm last:mb-0 ${disabledOption ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-brand-sky/40'}`}>
@@ -3014,7 +3034,7 @@ export function FinancePage() {
                           <span className="text-slate-700">{option}</span>
                         </span>
                         {disabledOption ? (
-                          <span className="text-xs font-semibold text-amber-700">Already paid</span>
+                          <span className="text-xs font-semibold text-amber-700">Fully paid</span>
                         ) : breakdownEntry ? (
                           <span className="text-xs font-semibold text-brand-navy">Monthly Due: {formatCurrency(breakdownEntry.monthlyPayable)} | Remaining: {formatCurrency(breakdownEntry.remainingAmount)}</span>
                         ) : null}
