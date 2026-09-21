@@ -514,6 +514,49 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
         return right.due - left.due;
       });
 
+    // Payable invoices expose the full invoice remaining amount (amount - paid),
+    // allowing fee collection for future months even when scheduled monthly due is currently zero.
+    const payableInvoices = (allUnpaidInvoices as InvoiceRow[])
+      .map((invoice: InvoiceRow) => {
+        const amount = Number(invoice.amount);
+        const paid = Number(invoice.paidAmount);
+        const due = Math.max(amount - paid, 0);
+
+        return {
+          id: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          title: invoice.title,
+          createdAt: invoice.createdAt.toISOString(),
+          componentBreakdown: parseInvoiceComponentSnapshot(invoice.componentSnapshot),
+          dueDate: invoice.dueDate.toISOString(),
+          amount,
+          paid,
+          due,
+          status: invoice.status,
+          student: {
+            id: invoice.student.id,
+            admissionNo: invoice.student.admissionNo,
+            name: `${invoice.student.firstName} ${invoice.student.lastName}`,
+            className: invoice.student.className,
+            section: invoice.student.section
+          }
+        };
+      })
+      .filter((invoice: { due: number }) => invoice.due > 0)
+      .sort((left: { dueDate: string; createdAt: string; due: number }, right: { dueDate: string; createdAt: string; due: number }) => {
+        const dueDateDelta = new Date(right.dueDate).getTime() - new Date(left.dueDate).getTime();
+        if (dueDateDelta !== 0) {
+          return dueDateDelta;
+        }
+
+        const createdAtDelta = new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+        if (createdAtDelta !== 0) {
+          return createdAtDelta;
+        }
+
+        return right.due - left.due;
+      });
+
     const periodDueStudents = (invoices as InvoiceRow[])
       .map((invoice: InvoiceRow) => {
         const billedToDate = computeScheduledBilledAmountByMonth(invoice, dueEvaluationMonth);
@@ -717,6 +760,7 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
         };
       }),
       dueStudents,
+      payableInvoices,
       studentCredits: (studentFeeCredits as StudentFeeCreditRow[]).map((credit: StudentFeeCreditRow) => ({
         studentId: credit.studentId,
         balance: Number(credit.balance)

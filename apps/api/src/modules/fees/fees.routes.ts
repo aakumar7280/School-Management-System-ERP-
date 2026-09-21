@@ -1914,11 +1914,29 @@ feesRouter.delete('/fees/transactions/:transactionId', async (req: Authenticated
 feesRouter.delete('/fees/transactions', async (req: AuthenticatedRequest, res) => {
   try {
     const schoolId = req.auth!.schoolId;
+    const studentId = typeof req.query.studentId === 'string' ? req.query.studentId.trim() : '';
+
+    if (!studentId) {
+      return res.status(400).json({
+        message: 'studentId is required. Global transaction clearing is disabled for safety.'
+      });
+    }
+
+    const student = await prisma.student.findFirst({
+      where: {
+        id: studentId,
+        schoolId
+      },
+      select: { id: true }
+    });
+
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found.' });
+    }
+
     const invoices = await prisma.feeInvoice.findMany({
       where: {
-        student: {
-          schoolId
-        }
+        studentId: student.id
       },
       select: { id: true }
     });
@@ -1950,9 +1968,7 @@ feesRouter.delete('/fees/transactions', async (req: AuthenticatedRequest, res) =
 
       await tx.studentFeeCredit.updateMany({
         where: {
-          student: {
-            schoolId
-          }
+          studentId: student.id
         },
         data: {
           balance: 0
@@ -1960,7 +1976,7 @@ feesRouter.delete('/fees/transactions', async (req: AuthenticatedRequest, res) =
       });
     });
 
-    return res.json({ message: 'Transaction log cleared successfully.' });
+    return res.json({ message: 'Selected student transaction log cleared successfully.' });
   } catch {
     return res.status(400).json({ message: 'Unable to clear transaction log.' });
   }

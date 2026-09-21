@@ -411,6 +411,29 @@ export interface FinanceOverview {
       section: string;
     };
   }>;
+  payableInvoices?: Array<{
+    id: string;
+    invoiceNumber?: string | null;
+    title: string;
+    createdAt?: string;
+    componentBreakdown?: Array<{
+      feeType: string;
+      cadence?: 'MONTHLY' | 'YEARLY' | 'ONCE' | null;
+      amount: number;
+    }>;
+    dueDate: string;
+    amount: number;
+    paid: number;
+    due: number;
+    status: string;
+    student: {
+      id: string;
+      admissionNo: string;
+      name: string;
+      className: string;
+      section: string;
+    };
+  }>;
   studentCredits: Array<{
     studentId: string;
     balance: number;
@@ -1317,8 +1340,9 @@ export async function downloadClassStudentList(params: { className: string; sect
   URL.revokeObjectURL(fileUrl);
 }
 
-export async function clearFeeTransactionsAsAdmin(): Promise<{ message: string }> {
-  const response = await fetch(`${API_BASE_URL}/fees/transactions`, {
+export async function clearFeeTransactionsAsAdmin(studentId: string): Promise<{ message: string }> {
+  const search = new URLSearchParams({ studentId });
+  const response = await fetch(`${API_BASE_URL}/fees/transactions?${search.toString()}`, {
     method: 'DELETE',
     headers: getAuthHeader()
   });

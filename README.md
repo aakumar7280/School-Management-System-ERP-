@@ -68,3 +68,26 @@ This starter repository is prepared from your requirement documents to reduce im
 - Current login endpoint is scaffolded and should be replaced with real password verification.
 - Add role middleware before exposing admin/finance routes.
 - Add automated tests before production release.
+
+## Local Testing With Production Data Clone
+
+If you want to reproduce production-only issues without touching the live app, use a local clone flow:
+
+1. Start local database (if not already running)
+   - docker compose up -d postgres
+2. Clone production database into local Docker Postgres
+   - PROD_DATABASE_URL="postgresql://..." npm run db:clone:prod:local
+3. Run apps against local database
+   - npm run dev:api
+   - npm run dev:web
+
+This keeps production unchanged while giving you near-real data locally.
+
+### Recommended Safe Release Workflow
+
+1. Create a feature branch and test locally with cloned production data.
+2. Merge to main only after verification.
+3. Keep production deploys tied only to reviewed changes.
+
+Optional but strongly recommended:
+- Create a separate staging deployment (different Render service + separate staging database) and deploy non-main branches there first.

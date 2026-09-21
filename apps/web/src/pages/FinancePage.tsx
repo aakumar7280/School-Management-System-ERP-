@@ -271,6 +271,28 @@ export function FinancePage() {
       });
   }, [overview?.dueStudents, selectedStudent]);
 
+  const filteredPayableInvoices = useMemo(() => {
+    const allPayable = overview?.payableInvoices ?? [];
+    if (!selectedStudent) return [];
+
+    return allPayable
+      .filter((invoice) => invoice.student.admissionNo === selectedStudent.admissionNo)
+      .sort((left, right) => {
+        const dueDateDelta = new Date(right.dueDate).getTime() - new Date(left.dueDate).getTime();
+        if (dueDateDelta !== 0) {
+          return dueDateDelta;
+        }
+
+        const leftCreatedAt = 'createdAt' in left && typeof left.createdAt === 'string' ? new Date(left.createdAt).getTime() : 0;
+        const rightCreatedAt = 'createdAt' in right && typeof right.createdAt === 'string' ? new Date(right.createdAt).getTime() : 0;
+        if (rightCreatedAt !== leftCreatedAt) {
+          return rightCreatedAt - leftCreatedAt;
+        }
+
+        return right.due - left.due;
+      });
+  }, [overview?.payableInvoices, selectedStudent]);
+
   const selectedMonthWindow = useMemo(() => {
     const [yearPart, monthPart] = month.split('-').map((value) => Number(value));
     const start = new Date(yearPart, monthPart - 1, 1);
@@ -345,8 +367,8 @@ export function FinancePage() {
   }, [overview?.studentCredits, selectedStudent]);
 
   const activePaymentInvoice = useMemo(
-    () => filteredDueStudents.find((invoice) => invoice.id === activePaymentInvoiceId) ?? null,
-    [activePaymentInvoiceId, filteredDueStudents]
+    () => filteredPayableInvoices.find((invoice) => invoice.id === activePaymentInvoiceId) ?? null,
+    [activePaymentInvoiceId, filteredPayableInvoices]
   );
 
   const paymentFeeBreakdown = useMemo(() => {
@@ -1445,7 +1467,7 @@ export function FinancePage() {
   }
 
   function openRecordPayment(invoiceId?: string, mode: 'regular' | 'advance' = 'regular') {
-    const invoice = invoiceId ? filteredDueStudents.find((row) => row.id === invoiceId) ?? null : null;
+    const invoice = invoiceId ? filteredPayableInvoices.find((row) => row.id === invoiceId) ?? null : null;
     if (mode === 'regular' && !invoice) return;
 
     setActivePaymentInvoiceId(invoice?.id ?? null);
@@ -1481,12 +1503,12 @@ export function FinancePage() {
   }
 
   function handleOpenPrimaryPaymentModal() {
-    if (filteredDueStudents.length === 0) {
-      setPaymentError('No due invoices available for the selected student.');
+    if (filteredPayableInvoices.length === 0) {
+      setPaymentError('No unpaid or partial invoices available for the selected student.');
       return;
     }
 
-    const firstDueInvoice = filteredDueStudents[0];
+    const firstDueInvoice = filteredPayableInvoices[0];
     openRecordPayment(firstDueInvoice.id, 'regular');
   }
 
@@ -1496,7 +1518,7 @@ export function FinancePage() {
       return;
     }
 
-    const firstDueInvoice = filteredDueStudents[0];
+    const firstDueInvoice = filteredPayableInvoices[0];
     openRecordPayment(firstDueInvoice?.id, 'advance');
   }
 
@@ -1505,7 +1527,7 @@ export function FinancePage() {
     setActivePaymentInvoiceId(normalizedInvoiceId.length > 0 ? normalizedInvoiceId : null);
 
     const selectedInvoice = normalizedInvoiceId.length > 0
-      ? filteredDueStudents.find((row) => row.id === normalizedInvoiceId)
+      ? filteredPayableInvoices.find((row) => row.id === normalizedInvoiceId)
       : undefined;
 
     if (selectedInvoice) {
@@ -1579,9 +1601,9 @@ export function FinancePage() {
   }, [activePaymentInvoice, paymentFeeBreakdown, selectedPaymentFeeTypes]);
 
   async function handleRecordPayment() {
-    const invoice = filteredDueStudents.find((row) => row.id === activePaymentInvoiceId);
+    const invoice = filteredPayableInvoices.find((row) => row.id === activePaymentInvoiceId);
     if (!invoice) {
-      setPaymentError('Please select a due record first.');
+      setPaymentError('Please select an unpaid or partial invoice first.');
       return;
     }
 
@@ -1885,7 +1907,14 @@ export function FinancePage() {
   }
 
   async function handleClearTransactionLog() {
-    const shouldClear = window.confirm('Clear all transaction logs? This will also reset all invoice paid amounts to 0.');
+    if (!selectedStudent) {
+      setPaymentError('Please select a student first.');
+      return;
+    }
+
+    const shouldClear = window.confirm(
+      `Clear all transaction logs only for ${selectedStudent.firstName} ${selectedStudent.lastName} (${selectedStudent.admissionNo})? This will reset only this student's invoice paid amounts to 0.`
+    );
     if (!shouldClear) return;
 
     setClearingTransactions(true);
@@ -1893,11 +1922,11 @@ export function FinancePage() {
     setPaymentMessage(null);
 
     try {
-      await clearFeeTransactionsAsAdmin();
+      await clearFeeTransactionsAsAdmin(selectedStudent.id);
       await loadFinanceData(month);
       setActivePaymentInvoiceId(null);
       setPaymentAmount('');
-      setPaymentMessage('Transaction log cleared successfully.');
+      setPaymentMessage('Selected student transaction log cleared successfully.');
     } catch (clearError) {
       setPaymentError(clearError instanceof Error ? clearError.message : 'Failed to clear transaction log');
     } finally {
@@ -2512,10 +2541,11 @@ export function FinancePage() {
           <button
             type="button"
             onClick={handleClearTransactionLog}
-            disabled={clearingTransactions}
+            disabled={clearingTransactions || !selectedStudent}
             className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
+            title={selectedStudent ? 'Clear all transaction rows for selected student only' : 'Select a student first'}
           >
-            {clearingTransactions ? 'Clearing...' : 'Clear All'}
+            {clearingTransactions ? 'Clearing...' : 'Clear Selected Student'}
           </button>
         </div>
         <div className="max-h-64 overflow-auto">
@@ -2599,7 +2629,7 @@ export function FinancePage() {
             <button
               type="button"
               onClick={handleOpenPrimaryPaymentModal}
-              disabled={filteredDueStudents.length === 0 || paymentSaving}
+              disabled={filteredPayableInvoices.length === 0 || paymentSaving}
               className="mt-3 w-full rounded-md bg-brand-navy px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-navy/90 disabled:opacity-60"
             >
               Record Payment
@@ -2883,7 +2913,7 @@ export function FinancePage() {
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="md:col-span-2">
                 <div className="mb-1 flex items-center justify-between gap-2">
-                  <p className="text-xs text-slate-500">{paymentModalMode === 'advance' ? 'Start With Due Invoice (Optional)' : 'Select Due Invoice'}</p>
+                  <p className="text-xs text-slate-500">{paymentModalMode === 'advance' ? 'Start With Invoice (Optional)' : 'Select Invoice With Remaining Balance'}</p>
                   {paymentModalMode === 'advance' ? (
                     <button
                       type="button"
@@ -2902,13 +2932,13 @@ export function FinancePage() {
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Select</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice No.</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
-                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due</th>
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Remaining</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due Date</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Type</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredDueStudents.map((invoice) => {
+                      {filteredPayableInvoices.map((invoice) => {
                         const selected = invoice.id === activePaymentInvoiceId;
                         const dueType = getDueTypeLabel(invoice.dueDate);
 
@@ -2937,8 +2967,8 @@ export function FinancePage() {
                       })}
                     </tbody>
                   </table>
-                  {filteredDueStudents.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-slate-500">No due invoices found for this student.</p>
+                  {filteredPayableInvoices.length === 0 ? (
+                    <p className="px-3 py-2 text-xs text-slate-500">No unpaid or partial invoices found for this student.</p>
                   ) : null}
                 </div>
               </div>
@@ -2946,7 +2976,7 @@ export function FinancePage() {
               <div className="md:col-span-2 rounded-md border border-slate-200/80 bg-slate-50/50 p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Invoice Due Snapshot</p>
-                  <p className="text-xs text-slate-500">Invoice Due: <span className="font-semibold text-brand-navy">{formatCurrency(activePaymentInvoice?.due ?? 0)}</span></p>
+                  <p className="text-xs text-slate-500">Invoice Remaining: <span className="font-semibold text-brand-navy">{formatCurrency(activePaymentInvoice?.due ?? 0)}</span></p>
                 </div>
 
                 {paymentModalMode === 'advance' ? (
