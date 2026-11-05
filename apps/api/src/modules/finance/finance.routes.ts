@@ -378,7 +378,6 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
           }
         },
         orderBy: { createdAt: 'desc' },
-        take: 250,
         select: {
           id: true,
           amount: true,
@@ -421,7 +420,6 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
           }
         },
         orderBy: { createdAt: 'desc' },
-        take: 250,
         select: {
           id: true,
           amount: true,
