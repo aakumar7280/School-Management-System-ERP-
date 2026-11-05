@@ -2392,7 +2392,7 @@ export function FinancePage() {
 
               <div className="rounded-xl border border-slate-200/80 bg-slate-50/50 p-3">
                 <h5 className="font-semibold text-brand-navy">Selected Student Pending Invoices</h5>
-                <p className="mt-1 text-xs text-slate-500">Outstanding invoices are listed directly below so payments can be recorded against the exact invoice items that were generated.</p>
+                <p className="mt-1 text-xs text-slate-500">All invoices with remaining balance are listed below for the selected student, regardless of the currently selected month filter.</p>
 
                 <div className="mt-3 max-h-56 overflow-auto rounded-md border border-slate-200/80 bg-white">
                   <table className="min-w-full border-collapse text-left text-xs">
@@ -2400,13 +2400,13 @@ export function FinancePage() {
                       <tr className="border-b border-slate-100 bg-slate-50/80">
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice No.</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Invoice</th>
-                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due</th>
+                        <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Remaining</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Due Date</th>
                         <th className="px-3 py-2 font-semibold uppercase tracking-wider text-slate-400">Type</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredDueStudents.map((invoice) => {
+                      {filteredPayableInvoices.map((invoice) => {
                         const dueType = getDueTypeLabel(invoice.dueDate);
 
                         return (
@@ -2421,7 +2421,7 @@ export function FinancePage() {
                       })}
                     </tbody>
                   </table>
-                  {filteredDueStudents.length === 0 ? <p className="px-3 py-2 text-xs text-slate-500">No pending invoices for this student.</p> : null}
+                  {filteredPayableInvoices.length === 0 ? <p className="px-3 py-2 text-xs text-slate-500">No pending invoices for this student.</p> : null}
                 </div>
               </div>
 
