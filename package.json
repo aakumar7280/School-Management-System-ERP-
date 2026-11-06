@@ -19,6 +19,8 @@
     "db:seed": "npm run db:seed --workspace @school-erp/db",
     "db:clone:prod:local": "bash ./scripts/clone-prod-db-to-local.sh",
     "db:deploy:prod": "npm run db:generate && npx prisma migrate deploy --schema packages/db/prisma/schema.prisma",
+    "db:push:safe:prod": "npm run db:generate && npx prisma db push --schema packages/db/prisma/schema.prisma",
+    "db:prepare:prod": "npm run db:deploy:prod || npm run db:push:safe:prod",
     "db:setup:prod": "npm run db:deploy:prod && npm run db:seed",
     "db:push:prod": "npm run db:generate && npx prisma db push --schema packages/db/prisma/schema.prisma --accept-data-loss",
     "db:bootstrap:prod": "npm run db:push:prod && npm run db:seed"
