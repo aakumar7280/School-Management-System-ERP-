@@ -368,6 +368,7 @@ export interface FinanceOverview {
     };
     student: {
       id: string;
+      admissionNo: string;
     };
   }>;
   periodInvoices: Array<{

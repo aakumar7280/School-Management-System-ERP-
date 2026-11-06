@@ -680,7 +680,8 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
               status: payment.invoice.status
             },
             student: {
-              id: payment.invoice.student.id
+              id: payment.invoice.student.id,
+              admissionNo: payment.invoice.student.admissionNo
             }
           };
         });
@@ -717,7 +718,8 @@ financeRouter.get('/finance/overview', async (req: AuthenticatedRequest, res) =>
                 status: invoice.status
               },
               student: {
-                id: invoice.student.id
+                id: invoice.student.id,
+                admissionNo: invoice.student.admissionNo
               }
             };
           });

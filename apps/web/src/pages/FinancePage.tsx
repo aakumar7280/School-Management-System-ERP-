@@ -356,7 +356,16 @@ export function FinancePage() {
   const filteredTransactions = useMemo(() => {
     const allTransactions = overview?.feeTransactions ?? [];
     if (!selectedStudent) return [];
-    return allTransactions.filter((transaction) => transaction.student.id === selectedStudent.id);
+
+    // Admission number is the stable school identity across re-activations/re-admissions.
+    // Fall back to student ID so legacy records still match when admissionNo is unavailable.
+    return allTransactions.filter((transaction) => {
+      if (transaction.student.admissionNo && selectedStudent.admissionNo) {
+        return transaction.student.admissionNo === selectedStudent.admissionNo;
+      }
+
+      return transaction.student.id === selectedStudent.id;
+    });
   }, [overview?.feeTransactions, selectedStudent]);
 
   const selectedStudentAdvanceBalance = useMemo(() => {
