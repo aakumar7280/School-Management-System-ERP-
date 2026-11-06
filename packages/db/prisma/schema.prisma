@@ -207,6 +207,29 @@ model FeePayment {
   invoice       FeeInvoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 }
 
+model FeeMutationAudit {
+  id            String   @id @default(cuid())
+  schoolId      String
+  actorUserId   String?
+  actorRole     String?
+  action        String
+  resourceType  String
+  resourceId    String?
+  requestId     String?
+  method        String?
+  route         String?
+  source        String?
+  reason        String?
+  affectedCount Int      @default(0)
+  affectedIds   Json?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([schoolId, createdAt])
+  @@index([requestId])
+  @@index([action, createdAt])
+}
+
 model StudentFeeCredit {
   id        String   @id @default(cuid())
   studentId String   @unique

@@ -6,6 +6,7 @@ import { env } from '../env.js';
 type AuthRole = 'STUDENT' | 'PARENT' | 'SUPER_ADMIN' | 'SCHOOL_ADMIN' | 'TEACHER' | 'ACCOUNTANT';
 
 export interface AuthenticatedRequest extends Request {
+  requestId?: string;
   auth?: {
     userId: string;
     role: AuthRole;

@@ -3,6 +3,7 @@ import express from 'express';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import path from 'path';
+import { randomUUID } from 'crypto';
 
 import { env } from './env.js';
 import { errorHandler } from './middleware/error-handler.js';
@@ -50,6 +51,13 @@ app.use(
 		}
 	})
 );
+app.use((req, res, next) => {
+	const incomingRequestId = req.header('x-request-id')?.trim();
+	const requestId = incomingRequestId && incomingRequestId.length > 0 ? incomingRequestId.slice(0, 128) : randomUUID();
+	(req as { requestId?: string }).requestId = requestId;
+	res.setHeader('x-request-id', requestId);
+	next();
+});
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan('dev'));
 app.use('/uploads', express.static(path.resolve(process.cwd(), 'apps/api/uploads')));

@@ -2,10 +2,92 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import { prisma } from '../../config/prisma.js';
+import { env } from '../../env.js';
 import { AuthenticatedRequest, requireStaffAuth } from '../../middleware/auth.js';
 import { InvoiceService } from './invoice.service.js';
 
 const feesRouter = Router();
+
+const TRUTHY_VALUES = new Set(['1', 'true', 'yes', 'on']);
+
+function parseSafePositiveInt(value: string, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.floor(parsed);
+}
+
+const deleteKillSwitchEnabled = TRUTHY_VALUES.has((env.FEE_TRANSACTION_DELETE_KILL_SWITCH ?? '').toLowerCase());
+const maxDeleteRowsPerRequest = parseSafePositiveInt(env.FEE_TRANSACTION_DELETE_MAX_ROWS, 200);
+const auditIdSampleSize = parseSafePositiveInt(env.FEE_AUDIT_SAMPLE_SIZE, 25);
+
+type FeeAuditEvent = {
+  req: AuthenticatedRequest;
+  action: string;
+  resourceType: string;
+  resourceId?: string | null;
+  reason?: string | null;
+  affectedCount?: number;
+  affectedIds?: string[];
+  metadata?: Record<string, unknown>;
+};
+
+function resolveAuditSource(req: AuthenticatedRequest) {
+  const schedulerSource = req.header('x-job-name')?.trim() || req.header('x-scheduler-name')?.trim();
+  if (schedulerSource) {
+    return `scheduler:${schedulerSource.slice(0, 80)}`;
+  }
+
+  return 'api';
+}
+
+function getForceDeletePayload(req: AuthenticatedRequest) {
+  const forceDelete = typeof req.query.force === 'string' && req.query.force.toLowerCase() === 'true';
+  const reason = typeof req.query.reason === 'string' ? req.query.reason.trim().slice(0, 500) : '';
+  return { forceDelete, reason };
+}
+
+function getRequestIp(req: AuthenticatedRequest) {
+  const forwarded = req.header('x-forwarded-for');
+  if (forwarded) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip;
+}
+
+async function writeFeeAuditEvent(event: FeeAuditEvent) {
+  const { req } = event;
+  const actor = req.auth;
+
+  try {
+    await prisma.feeMutationAudit.create({
+      data: {
+        schoolId: actor?.schoolId ?? 'UNKNOWN',
+        actorUserId: actor?.userId,
+        actorRole: actor?.role,
+        action: event.action,
+        resourceType: event.resourceType,
+        resourceId: event.resourceId ?? null,
+        requestId: req.requestId ?? req.header('x-request-id') ?? null,
+        method: req.method,
+        route: req.originalUrl?.slice(0, 400) ?? null,
+        source: resolveAuditSource(req),
+        reason: event.reason ?? null,
+        affectedCount: Number.isFinite(event.affectedCount) ? Number(event.affectedCount) : 0,
+        affectedIds: event.affectedIds && event.affectedIds.length > 0 ? event.affectedIds.slice(0, auditIdSampleSize) : undefined,
+        metadata: {
+          ip: getRequestIp(req),
+          userAgent: req.header('user-agent') ?? null,
+          ...event.metadata
+        }
+      }
+    });
+  } catch (auditError) {
+    console.error('Failed to write fee mutation audit event', auditError);
+  }
+}
 
 const createInvoiceSchema = z.object({
   admissionNo: z.string().min(3),
@@ -1566,6 +1648,25 @@ feesRouter.post('/fees/invoices/:invoiceId/pay', async (req: AuthenticatedReques
       };
     });
 
+    await writeFeeAuditEvent({
+      req,
+      action: 'FEE_PAYMENT_RECORDED',
+      resourceType: 'FeeInvoice',
+      resourceId: invoice.id,
+      affectedCount: normalizedAllocations.length + (overpaidAmount > 0 ? 1 : 0),
+      metadata: {
+        studentId: invoice.studentId,
+        requestedAmount,
+        appliedAmount: payAmount,
+        overpaidAmount,
+        nextDue,
+        paymentMethod: payload.paymentMethod,
+        feeMonth,
+        academicSession,
+        allocationCount: normalizedAllocations.length
+      }
+    });
+
     return res.json({
       message:
         overpaidAmount > 0
@@ -1795,6 +1896,24 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
       };
     });
 
+    await writeFeeAuditEvent({
+      req,
+      action: 'STUDENT_ADVANCE_PAYMENT_RECORDED',
+      resourceType: 'Student',
+      resourceId: student.id,
+      metadata: {
+        studentAdmissionNo: student.admissionNo,
+        studentName: `${student.firstName} ${student.lastName}`,
+        requestedAmount: Number(payload.amount),
+        totalAppliedToInvoices: result.totalAppliedToInvoices,
+        carryForwardCredit: result.carryForwardCredit,
+        paymentMethod: payload.paymentMethod,
+        sourceInvoiceId: payload.sourceInvoiceId ?? null,
+        feeMonth: normalizedFeeMonth ?? null,
+        academicSession: normalizedAcademicSession ?? null
+      }
+    });
+
     return res.json({
       message:
         result.carryForwardCredit > 0
@@ -1824,15 +1943,87 @@ feesRouter.post('/fees/students/:studentId/advance-payments', async (req: Authen
   }
 });
 
+feesRouter.get('/fees/audit-trail', async (req: AuthenticatedRequest, res) => {
+  try {
+    const schoolId = req.auth!.schoolId;
+    const action = typeof req.query.action === 'string' ? req.query.action.trim() : '';
+    const resourceType = typeof req.query.resourceType === 'string' ? req.query.resourceType.trim() : '';
+    const resourceId = typeof req.query.resourceId === 'string' ? req.query.resourceId.trim() : '';
+    const requestId = typeof req.query.requestId === 'string' ? req.query.requestId.trim() : '';
+    const from = typeof req.query.from === 'string' ? new Date(req.query.from) : null;
+    const to = typeof req.query.to === 'string' ? new Date(req.query.to) : null;
+    const rawLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : 100;
+    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 100, 1), 500);
+
+    const where: any = { schoolId };
+
+    if (action.length > 0) where.action = action;
+    if (resourceType.length > 0) where.resourceType = resourceType;
+    if (resourceId.length > 0) where.resourceId = resourceId;
+    if (requestId.length > 0) where.requestId = requestId;
+
+    if ((from && !Number.isNaN(from.getTime())) || (to && !Number.isNaN(to.getTime()))) {
+      where.createdAt = {};
+      if (from && !Number.isNaN(from.getTime())) where.createdAt.gte = from;
+      if (to && !Number.isNaN(to.getTime())) where.createdAt.lte = to;
+    }
+
+    const events = await prisma.feeMutationAudit.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: limit
+    });
+
+    return res.json({
+      count: events.length,
+      events
+    });
+  } catch {
+    return res.status(400).json({ message: 'Unable to fetch fee audit trail.' });
+  }
+});
+
 feesRouter.delete('/fees/invoices/:invoiceId', async (req: AuthenticatedRequest, res) => {
   try {
     const schoolId = req.auth!.schoolId;
+    const actorRole = req.auth!.role;
+    const { forceDelete, reason } = getForceDeletePayload(req);
+
+    if (deleteKillSwitchEnabled) {
+      await writeFeeAuditEvent({
+        req,
+        action: 'FEE_INVOICE_DELETE_BLOCKED',
+        resourceType: 'FeeInvoice',
+        resourceId: req.params.invoiceId,
+        reason: 'Fee transaction delete kill switch is enabled.',
+        metadata: { killSwitchEnabled: true }
+      });
+
+      return res.status(423).json({
+        message: 'Deletion is temporarily disabled by guardrails. Contact SUPER_ADMIN to review audit logs.'
+      });
+    }
+
+    if (forceDelete && actorRole !== 'SUPER_ADMIN') {
+      return res.status(403).json({ message: 'Only SUPER_ADMIN can force large delete operations.' });
+    }
+
+    if (forceDelete && reason.length === 0) {
+      return res.status(400).json({ message: 'A reason is required when force=true.' });
+    }
+
     const invoice = await prisma.feeInvoice.findFirst({
       where: {
         id: req.params.invoiceId,
         student: {
           schoolId
         }
+      },
+      select: {
+        id: true,
+        studentId: true,
+        invoiceNumber: true,
+        title: true
       }
     });
 
@@ -1840,10 +2031,66 @@ feesRouter.delete('/fees/invoices/:invoiceId', async (req: AuthenticatedRequest,
       return res.status(404).json({ message: 'Fee invoice not found.' });
     }
 
+    const [linkedPaymentCount, linkedPaymentSample] = await Promise.all([
+      prisma.feePayment.count({ where: { invoiceId: invoice.id } }),
+      prisma.feePayment.findMany({
+        where: { invoiceId: invoice.id },
+        orderBy: { createdAt: 'desc' },
+        take: auditIdSampleSize,
+        select: { id: true }
+      })
+    ]);
+
+    if (linkedPaymentCount > maxDeleteRowsPerRequest && !forceDelete) {
+      await writeFeeAuditEvent({
+        req,
+        action: 'FEE_INVOICE_DELETE_BLOCKED',
+        resourceType: 'FeeInvoice',
+        resourceId: invoice.id,
+        reason: `Delete threshold exceeded (${linkedPaymentCount} > ${maxDeleteRowsPerRequest}).`,
+        affectedCount: linkedPaymentCount,
+        affectedIds: linkedPaymentSample.map((payment: { id: string }) => payment.id),
+        metadata: {
+          guardrail: 'maxDeleteRowsPerRequest',
+          threshold: maxDeleteRowsPerRequest,
+          forceDelete
+        }
+      });
+
+      return res.status(409).json({
+        message: `Guardrail blocked delete because it would remove ${linkedPaymentCount} payment records. Retry with force=true&reason=<ticket> as SUPER_ADMIN if this is intentional.`
+      });
+    }
+
     await prisma.feeInvoice.delete({ where: { id: invoice.id } });
 
+    await writeFeeAuditEvent({
+      req,
+      action: 'FEE_INVOICE_DELETED',
+      resourceType: 'FeeInvoice',
+      resourceId: invoice.id,
+      reason: reason || null,
+      affectedCount: linkedPaymentCount + 1,
+      affectedIds: [invoice.id, ...linkedPaymentSample.map((payment: { id: string }) => payment.id)],
+      metadata: {
+        studentId: invoice.studentId,
+        invoiceNumber: invoice.invoiceNumber,
+        invoiceTitle: invoice.title,
+        linkedPaymentCount,
+        forceDelete
+      }
+    });
+
     return res.json({ message: 'Fee invoice deleted successfully.' });
-  } catch {
+  } catch (error) {
+    await writeFeeAuditEvent({
+      req,
+      action: 'FEE_INVOICE_DELETE_FAILED',
+      resourceType: 'FeeInvoice',
+      resourceId: req.params.invoiceId,
+      reason: error instanceof Error ? error.message.slice(0, 500) : 'Unknown delete failure.'
+    });
+
     return res.status(400).json({ message: 'Unable to delete fee invoice.' });
   }
 });
@@ -1851,6 +2098,21 @@ feesRouter.delete('/fees/invoices/:invoiceId', async (req: AuthenticatedRequest,
 feesRouter.delete('/fees/transactions/:transactionId', async (req: AuthenticatedRequest, res) => {
   try {
     const schoolId = req.auth!.schoolId;
+
+    if (deleteKillSwitchEnabled) {
+      await writeFeeAuditEvent({
+        req,
+        action: 'FEE_PAYMENT_DELETE_BLOCKED',
+        resourceType: 'FeePayment',
+        resourceId: req.params.transactionId,
+        reason: 'Fee transaction delete kill switch is enabled.',
+        metadata: { killSwitchEnabled: true }
+      });
+
+      return res.status(423).json({
+        message: 'Deletion is temporarily disabled by guardrails. Contact SUPER_ADMIN to review audit logs.'
+      });
+    }
 
     const payment = await prisma.feePayment.findFirst({
       where: {
@@ -1878,6 +2140,18 @@ feesRouter.delete('/fees/transactions/:transactionId', async (req: Authenticated
 
     const normalizedFeeType = (payment.feeType ?? '').toLowerCase();
     if (normalizedFeeType.includes('advance')) {
+      await writeFeeAuditEvent({
+        req,
+        action: 'FEE_PAYMENT_DELETE_BLOCKED',
+        resourceType: 'FeePayment',
+        resourceId: payment.id,
+        reason: 'Advance-related entries are not deletable individually.',
+        metadata: {
+          invoiceId: payment.invoice.id,
+          feeType: payment.feeType ?? null
+        }
+      });
+
       return res.status(400).json({
         message: 'Advance-related transactions cannot be deleted individually. Use dedicated advance adjustments instead.'
       });
@@ -1905,8 +2179,31 @@ feesRouter.delete('/fees/transactions/:transactionId', async (req: Authenticated
       });
     });
 
+    await writeFeeAuditEvent({
+      req,
+      action: 'FEE_PAYMENT_DELETED',
+      resourceType: 'FeePayment',
+      resourceId: payment.id,
+      affectedCount: 1,
+      affectedIds: [payment.id],
+      metadata: {
+        invoiceId: payment.invoice.id,
+        paymentAmount,
+        invoiceDueAfterDelete: nextDue,
+        invoiceStatusAfterDelete: nextStatus
+      }
+    });
+
     return res.json({ message: 'Transaction deleted successfully.' });
-  } catch {
+  } catch (error) {
+    await writeFeeAuditEvent({
+      req,
+      action: 'FEE_PAYMENT_DELETE_FAILED',
+      resourceType: 'FeePayment',
+      resourceId: req.params.transactionId,
+      reason: error instanceof Error ? error.message.slice(0, 500) : 'Unknown delete failure.'
+    });
+
     return res.status(400).json({ message: 'Unable to delete transaction.' });
   }
 });
@@ -1914,7 +2211,32 @@ feesRouter.delete('/fees/transactions/:transactionId', async (req: Authenticated
 feesRouter.delete('/fees/transactions', async (req: AuthenticatedRequest, res) => {
   try {
     const schoolId = req.auth!.schoolId;
+    const actorRole = req.auth!.role;
+    const { forceDelete, reason } = getForceDeletePayload(req);
     const studentId = typeof req.query.studentId === 'string' ? req.query.studentId.trim() : '';
+
+    if (deleteKillSwitchEnabled) {
+      await writeFeeAuditEvent({
+        req,
+        action: 'STUDENT_TRANSACTION_CLEAR_BLOCKED',
+        resourceType: 'Student',
+        resourceId: studentId || null,
+        reason: 'Fee transaction delete kill switch is enabled.',
+        metadata: { killSwitchEnabled: true }
+      });
+
+      return res.status(423).json({
+        message: 'Transaction clear is temporarily disabled by guardrails. Contact SUPER_ADMIN to review audit logs.'
+      });
+    }
+
+    if (forceDelete && actorRole !== 'SUPER_ADMIN') {
+      return res.status(403).json({ message: 'Only SUPER_ADMIN can force large delete operations.' });
+    }
+
+    if (forceDelete && reason.length === 0) {
+      return res.status(400).json({ message: 'A reason is required when force=true.' });
+    }
 
     if (!studentId) {
       return res.status(400).json({
@@ -1927,7 +2249,12 @@ feesRouter.delete('/fees/transactions', async (req: AuthenticatedRequest, res) =
         id: studentId,
         schoolId
       },
-      select: { id: true }
+      select: {
+        id: true,
+        admissionNo: true,
+        firstName: true,
+        lastName: true
+      }
     });
 
     if (!student) {
@@ -1942,6 +2269,49 @@ feesRouter.delete('/fees/transactions', async (req: AuthenticatedRequest, res) =
     });
 
     const invoiceIds = invoices.map((invoice: { id: string }) => invoice.id);
+
+    const [paymentCount, paymentSample] = invoiceIds.length
+      ? await Promise.all([
+          prisma.feePayment.count({
+            where: {
+              invoiceId: {
+                in: invoiceIds
+              }
+            }
+          }),
+          prisma.feePayment.findMany({
+            where: {
+              invoiceId: {
+                in: invoiceIds
+              }
+            },
+            orderBy: { createdAt: 'desc' },
+            take: auditIdSampleSize,
+            select: { id: true }
+          })
+        ])
+      : [0, [] as Array<{ id: string }>];
+
+    if (paymentCount > maxDeleteRowsPerRequest && !forceDelete) {
+      await writeFeeAuditEvent({
+        req,
+        action: 'STUDENT_TRANSACTION_CLEAR_BLOCKED',
+        resourceType: 'Student',
+        resourceId: student.id,
+        reason: `Delete threshold exceeded (${paymentCount} > ${maxDeleteRowsPerRequest}).`,
+        affectedCount: paymentCount,
+        affectedIds: paymentSample.map((payment: { id: string }) => payment.id),
+        metadata: {
+          studentAdmissionNo: student.admissionNo,
+          threshold: maxDeleteRowsPerRequest,
+          forceDelete
+        }
+      });
+
+      return res.status(409).json({
+        message: `Guardrail blocked transaction clear because it would remove ${paymentCount} payment records. Retry with force=true&reason=<ticket> as SUPER_ADMIN if this is intentional.`
+      });
+    }
 
     await prisma.$transaction(async (tx: any) => {
       if (invoiceIds.length > 0) {
@@ -1976,8 +2346,40 @@ feesRouter.delete('/fees/transactions', async (req: AuthenticatedRequest, res) =
       });
     });
 
-    return res.json({ message: 'Selected student transaction log cleared successfully.' });
-  } catch {
+    await writeFeeAuditEvent({
+      req,
+      action: 'STUDENT_TRANSACTION_CLEARED',
+      resourceType: 'Student',
+      resourceId: student.id,
+      reason: reason || null,
+      affectedCount: paymentCount,
+      affectedIds: paymentSample.map((payment: { id: string }) => payment.id),
+      metadata: {
+        studentAdmissionNo: student.admissionNo,
+        studentName: `${student.firstName} ${student.lastName}`,
+        invoiceCount: invoiceIds.length,
+        forceDelete,
+        creditsResetToZero: true
+      }
+    });
+
+    return res.json({
+      message: 'Selected student transaction log cleared successfully.',
+      summary: {
+        studentId: student.id,
+        clearedPayments: paymentCount,
+        invoiceCount: invoiceIds.length
+      }
+    });
+  } catch (error) {
+    await writeFeeAuditEvent({
+      req,
+      action: 'STUDENT_TRANSACTION_CLEAR_FAILED',
+      resourceType: 'Student',
+      resourceId: typeof req.query.studentId === 'string' ? req.query.studentId : null,
+      reason: error instanceof Error ? error.message.slice(0, 500) : 'Unknown clear failure.'
+    });
+
     return res.status(400).json({ message: 'Unable to clear transaction log.' });
   }
 });

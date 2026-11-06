@@ -5,7 +5,7 @@ services:
     plan: free
     region: singapore
     rootDir: .
-    buildCommand: (npm ci --include=dev || (rm -f package-lock.json && npm install --include=dev)) && npm run db:bootstrap:prod && npm run build --workspace @school-erp/api
+    buildCommand: (npm ci --include=dev || (rm -f package-lock.json && npm install --include=dev)) && npm run db:deploy:prod && npm run build --workspace @school-erp/api
     startCommand: npm run start --workspace @school-erp/api
     healthCheckPath: /api/health
     envVars:
@@ -23,3 +23,9 @@ services:
         value: 1d
       - key: CORS_ORIGIN
         sync: false
+      - key: FEE_TRANSACTION_DELETE_KILL_SWITCH
+        value: "false"
+      - key: FEE_TRANSACTION_DELETE_MAX_ROWS
+        value: "200"
+      - key: FEE_AUDIT_SAMPLE_SIZE
+        value: "25"
